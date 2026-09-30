@@ -1,0 +1,151 @@
+{% extends "base.html" %}
+{% block title %}{{ work.work_name }} – {{ house.name }}{% endblock %}
+{% block content %}
+
+<div class="d-flex align-items-center mb-3 gap-2 flex-wrap">
+  <a href="{{ url_for('house_detail', house_id=house.id) }}" class="btn btn-farm-outline">
+    <i class="bi bi-arrow-left me-1"></i>{{ house.name }}
+  </a>
+  <h2 class="fw-bold mb-0 ms-1" style="font-size:1.3rem;">
+    <i class="bi bi-clipboard-check-fill me-2 text-success"></i>{{ work.work_name }}
+  </h2>
+</div>
+
+<!-- 作業情報 -->
+<div class="card mb-3">
+  <div class="card-body py-2 px-3 d-flex flex-wrap gap-3 align-items-center">
+    <span class="badge rounded-pill px-3 py-2 fs-6
+      {% if work.work_type == 'pesticide' %}bg-warning text-dark
+      {% elif work.work_type == 'fertilizer' %}bg-info text-dark
+      {% elif work.work_type == 'pruning' %}bg-success
+      {% else %}bg-secondary{% endif %}">
+      {% if work.work_type == 'pesticide' %}<i class="bi bi-bug-fill me-1"></i>農薬散布
+      {% elif work.work_type == 'fertilizer' %}<i class="bi bi-moisture me-1"></i>施肥
+      {% elif work.work_type == 'pruning' %}<i class="bi bi-scissors me-1"></i>剪定
+      {% else %}<i class="bi bi-tools me-1"></i>その他{% endif %}
+    </span>
+    {% if work.scheduled_at %}
+    <div><i class="bi bi-calendar3 me-1 text-muted"></i>予定日: <strong>{{ work.scheduled_at }}</strong></div>
+    {% endif %}
+    {% if work.notes %}
+    <div class="text-muted small w-100">{{ work.notes }}</div>
+    {% endif %}
+  </div>
+</div>
+
+<!-- 進捗バー -->
+<div class="card mb-3">
+  <div class="card-body py-3 px-3">
+    <div class="d-flex justify-content-between align-items-center mb-2">
+      <span class="fw-bold fs-5">
+        <i class="bi bi-check2-circle me-2 text-success"></i>進捗
+      </span>
+      <span class="fw-bold fs-4">{{ done }} / {{ total }}</span>
+    </div>
+    <div class="progress" style="height: 20px; border-radius: 10px;">
+      {% set pct = (done / total * 100)|int if total else 0 %}
+      <div class="progress-bar bg-success" style="width: {{ pct }}%; border-radius: 10px;">
+        {% if pct > 10 %}{{ pct }}%{% endif %}
+      </div>
+    </div>
+    <div class="mt-2 text-muted small">残り {{ total - done }}本</div>
+  </div>
+</div>
+
+<!-- 一括ボタン -->
+<div class="d-flex gap-2 mb-3">
+  <form method="POST" action="{{ url_for('work_check_all', work_id=work.id) }}" class="flex-grow-1">
+    <input type="hidden" name="completed" value="1">
+    <button type="submit" class="btn btn-success w-100">
+      <i class="bi bi-check-all me-1"></i>全て完了にする
+    </button>
+  </form>
+  <form method="POST" action="{{ url_for('work_check_all', work_id=work.id) }}" class="flex-grow-1">
+    <input type="hidden" name="completed" value="0">
+    <button type="submit" class="btn btn-outline-secondary w-100">
+      <i class="bi bi-x-circle me-1"></i>全てリセット
+    </button>
+  </form>
+</div>
+
+<!-- チェックグリッド -->
+<div class="card mb-4">
+  <div class="card-header py-2">
+    <i class="bi bi-grid me-2"></i>木ごとのチェック（タップで切り替え）
+  </div>
+  <div class="card-body p-3 tree-grid">
+    <table>
+      <thead>
+        <tr>
+          <th class="row-label"></th>
+          {% for c in range(1, house.cols + 1) %}
+          <th style="width:56px; text-align:center; font-size:.7rem; color:#6c757d; padding-bottom:4px;">
+            {{ c }}
+          </th>
+          {% endfor %}
+        </tr>
+      </thead>
+      <tbody>
+        {% for r in range(1, house.rows + 1) %}
+        <tr>
+          <td class="row-label">{{ r }}列</td>
+          {% for c in range(1, house.cols + 1) %}
+            {% set row = grid.get((r, c)) %}
+            {% if row %}
+            <td>
+              <form method="POST"
+                    action="{{ url_for('work_toggle', work_id=work.id, tree_id=row.tree_id) }}"
+                    style="margin:0;">
+                <button type="submit"
+                        class="work-cell {{ 'done' if row.completed else 'not-done' }} border-0"
+                        title="{{ row.label or (r|string + '-' + c|string) }}">
+                  {% if row.completed %}
+                  <i class="bi bi-check-lg" style="font-size:1.2rem;"></i>
+                  {% else %}
+                  <span>{{ row.label or (r|string + '-' + c|string) }}</span>
+                  {% endif %}
+                </button>
+              </form>
+            </td>
+            {% endif %}
+          {% endfor %}
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+</div>
+
+<!-- 完了済みリスト -->
+{% set done_list = grid.values()|selectattr('completed')|list %}
+{% if done_list %}
+<div class="card mb-4">
+  <div class="card-header py-2 bg-success text-white">
+    <i class="bi bi-check-circle-fill me-2"></i>完了済み ({{ done_list|length }}本)
+  </div>
+  <div class="card-body p-0">
+    <div class="row g-0 p-2">
+      {% for r in done_list %}
+      <div class="col-auto">
+        <span class="badge bg-success m-1 px-2 py-2">
+          {{ r.label or (r.row_num|string + '-' + r.col_num|string) }}
+          <br><small>{{ r.completed_at }}</small>
+        </span>
+      </div>
+      {% endfor %}
+    </div>
+  </div>
+</div>
+{% endif %}
+
+<!-- 削除 -->
+<div class="text-end mt-2">
+  <form method="POST" action="{{ url_for('work_delete', work_id=work.id) }}"
+        onsubmit="return confirm('この作業記録を削除しますか？')">
+    <button type="submit" class="btn btn-outline-danger btn-sm">
+      <i class="bi bi-trash me-1"></i>この作業記録を削除
+    </button>
+  </form>
+</div>
+
+{% endblock %}

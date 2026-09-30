@@ -1,0 +1,65 @@
+{% extends "base.html" %}
+{% block title %}作業を登録 – {{ house.name }}{% endblock %}
+{% block content %}
+
+<div class="mb-3">
+  <a href="{{ url_for('house_detail', house_id=house.id) }}" class="btn btn-farm-outline">
+    <i class="bi bi-arrow-left me-1"></i>{{ house.name }}
+  </a>
+</div>
+
+<div class="card">
+  <div class="card-header py-3">
+    <h4 class="mb-0">
+      <i class="bi bi-clipboard-plus-fill me-2"></i>作業を登録する
+    </h4>
+    <div class="small mt-1 opacity-75">{{ house.name }} の全 {{ house.rows * house.cols }}本 に対して</div>
+  </div>
+  <div class="card-body p-4">
+    <form method="POST">
+      <div class="mb-4">
+        <label class="form-label fw-bold fs-5">作業の種類</label>
+        <div class="row g-2">
+          {% for val, icon, label, color in [
+            ('pesticide','bug','農薬散布','warning'),
+            ('fertilizer','moisture','施肥','info'),
+            ('pruning','scissors','剪定','success'),
+            ('other','tools','その他','secondary')
+          ] %}
+          <div class="col-6">
+            <input type="radio" class="btn-check" name="work_type" id="wt_{{ val }}"
+                   value="{{ val }}" {{ 'checked' if loop.first }}>
+            <label class="btn btn-outline-{{ color }} w-100 py-3 d-flex flex-column align-items-center gap-1"
+                   for="wt_{{ val }}">
+              <i class="bi bi-{{ icon }}-fill fs-3"></i>
+              <span class="fw-bold">{{ label }}</span>
+            </label>
+          </div>
+          {% endfor %}
+        </div>
+      </div>
+
+      <div class="mb-4">
+        <label class="form-label fw-bold fs-5">作業名 <span class="text-danger">*</span></label>
+        <input type="text" name="work_name" class="form-control form-control-lg"
+               placeholder="例：第1回 農薬散布（〇〇剤）" required>
+      </div>
+
+      <div class="mb-4">
+        <label class="form-label fw-bold fs-5">予定日（任意）</label>
+        <input type="date" name="scheduled_at" class="form-control form-control-lg">
+      </div>
+
+      <div class="mb-4">
+        <label class="form-label fw-bold">メモ（薬剤名・希釈倍率など）</label>
+        <textarea name="notes" class="form-control" rows="3"
+                  placeholder="例：スミチオン 1000倍 ／ 10Lタンク 3回分"></textarea>
+      </div>
+
+      <button type="submit" class="btn btn-farm btn-lg w-100">
+        <i class="bi bi-check-lg me-1"></i>作業を登録して一覧を開く
+      </button>
+    </form>
+  </div>
+</div>
+{% endblock %}
