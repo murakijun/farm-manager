@@ -1,7 +1,6 @@
 __pycache__/
 *.pyc
-*.pyo
-farm.db
-uploads/
-*.env
+local-app/__pycache__/
+local-app/farm.db
+local-app/uploads/
 .DS_Store
