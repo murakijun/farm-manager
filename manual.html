@@ -1,0 +1,389 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>農場 木管理システム 使い方ガイド</title>
+  <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.2/dist/css/bootstrap.min.css" rel="stylesheet">
+  <link href="https://cdn.jsdelivr.net/npm/bootstrap-icons@1.11.3/font/bootstrap-icons.css" rel="stylesheet">
+  <style>
+    :root { --green-dark:#2d6a4f; --green-mid:#40916c; --green-light:#74c69d; }
+    body { background:#f4f9f4; font-family:'Helvetica Neue',sans-serif; }
+    .navbar { background:var(--green-dark) !important; }
+    .navbar-brand { font-size:1.3rem; font-weight:bold; }
+    h2 { color:var(--green-dark); border-bottom:2px solid var(--green-light); padding-bottom:.4rem; margin-top:2.5rem; }
+    h3 { color:var(--green-mid); margin-top:1.5rem; }
+    .section-card { background:#fff; border-radius:12px; box-shadow:0 2px 8px rgba(0,0,0,.08); padding:1.5rem 2rem; margin-bottom:1.5rem; }
+    .badge-normal  { background:#28a745; color:#fff; }
+    .badge-caution { background:#fd7e14; color:#fff; }
+    .badge-sick    { background:#dc3545; color:#fff; }
+    .badge-dead    { background:#6c757d; color:#fff; }
+    .status-badge { display:inline-block; padding:.2rem .7rem; border-radius:6px; font-weight:bold; font-size:.9rem; margin:.2rem; }
+    pre { background:#f8f9fa; border-radius:8px; padding:1rem; font-size:.85rem; overflow-x:auto; }
+    .toc a { color:var(--green-dark); text-decoration:none; }
+    .toc a:hover { text-decoration:underline; }
+    .toc li { padding:.2rem 0; }
+    .warn-box { background:#fff3cd; border-left:4px solid #ffc107; border-radius:0 8px 8px 0; padding:.8rem 1rem; margin:.8rem 0; }
+    .info-box { background:#d1ecf1; border-left:4px solid #17a2b8; border-radius:0 8px 8px 0; padding:.8rem 1rem; margin:.8rem 0; }
+    table { font-size:.92rem; }
+    .step-num { display:inline-flex; align-items:center; justify-content:center; width:28px; height:28px; background:var(--green-dark); color:#fff; border-radius:50%; font-weight:bold; font-size:.85rem; margin-right:.5rem; flex-shrink:0; }
+    .step { display:flex; align-items:flex-start; margin:.5rem 0; }
+    .changelog tr:first-child td { font-weight:bold; color:var(--green-dark); }
+    footer { background:var(--green-dark); color:#fff; text-align:center; padding:1.5rem; margin-top:3rem; }
+    @media(max-width:576px){ .section-card { padding:1rem; } }
+  </style>
+</head>
+<body>
+
+<nav class="navbar navbar-dark px-3">
+  <span class="navbar-brand"><i class="bi bi-book-fill me-2"></i>農場 木管理システム 使い方ガイド</span>
+  <a href="index.html" class="btn btn-sm btn-outline-light"><i class="bi bi-house-fill me-1"></i>アプリを開く</a>
+</nav>
+
+<div class="container py-4" style="max-width:860px;">
+
+  <p class="text-muted mt-2 mb-4">最終更新：2026年10月1日</p>
+
+  <!-- 目次 -->
+  <div class="section-card toc">
+    <h5 class="fw-bold mb-3"><i class="bi bi-list-ul me-2 text-success"></i>目次</h5>
+    <ol>
+      <li><a href="#overview">概要とアクセス方法</a></li>
+      <li><a href="#home">ホーム画面（ハウス一覧）</a></li>
+      <li><a href="#house">ハウス詳細画面</a></li>
+      <li><a href="#tree">木の管理</a></li>
+      <li><a href="#work">作業チェックリスト</a></li>
+      <li><a href="#time">時間管理（打刻）</a></li>
+      <li><a href="#summary">集計</a></li>
+      <li><a href="#export">エクスポート（エクセル出力）</a></li>
+      <li><a href="#changelog">更新履歴</a></li>
+    </ol>
+  </div>
+
+  <!-- 1. 概要 -->
+  <div class="section-card" id="overview">
+    <h2><i class="bi bi-info-circle-fill me-2"></i>1. 概要とアクセス方法</h2>
+    <p>ブラウザで以下のURLを開くだけで使えます。アプリのインストールは不要です。</p>
+    <div class="info-box">
+      <strong>URL：</strong>
+      <a href="https://murakijun.github.io/farm-manager/" target="_blank">https://murakijun.github.io/farm-manager/</a>
+    </div>
+    <p>スマートフォンのホーム画面に追加しておくと、アプリのように使えます。</p>
+    <ul>
+      <li><strong>iPhone（Safari）：</strong>「共有」ボタン →「ホーム画面に追加」</li>
+      <li><strong>Android（Chrome）：</strong>右上メニュー →「ホーム画面に追加」</li>
+    </ul>
+
+    <h3>このシステムでできること</h3>
+    <table class="table table-bordered">
+      <thead class="table-success">
+        <tr><th>機能</th><th>内容</th></tr>
+      </thead>
+      <tbody>
+        <tr><td><strong>ハウス管理</strong></td><td>複数のハウスを登録し、ハウスごとに木を管理する</td></tr>
+        <tr><td><strong>木の状態記録</strong></td><td>一本ずつ「正常・注意・病気・枯死」の状態を記録する</td></tr>
+        <tr><td><strong>写真とメモ</strong></td><td>木の様子を写真で残し、気になることをメモする</td></tr>
+        <tr><td><strong>作業チェックリスト</strong></td><td>農薬散布・剪定などの作業をハウス単位で管理する</td></tr>
+        <tr><td><strong>作業時間の打刻</strong></td><td>ハウスに入るとき・出るときにボタンを押すだけで時間を記録する</td></tr>
+        <tr><td><strong>集計</strong></td><td>月別・ハウス別・作業種類別の作業時間を自動で集計する</td></tr>
+        <tr><td><strong>エクセル出力</strong></td><td>記録したデータをエクセルファイルで保存・印刷できる</td></tr>
+      </tbody>
+    </table>
+
+    <div class="warn-box">
+      <strong><i class="bi bi-exclamation-triangle-fill me-1"></i>注意：</strong>
+      データはお使いの端末のブラウザ内にのみ保存されます。ブラウザのデータを消去するとすべて消えるため、<strong>月に1回はエクセル出力でバックアップ</strong>を取ることをおすすめします。複数の端末でのデータ共有には対応していません。
+    </div>
+  </div>
+
+  <!-- 2. ホーム画面 -->
+  <div class="section-card" id="home">
+    <h2><i class="bi bi-house-fill me-2"></i>2. ホーム画面（ハウス一覧）</h2>
+    <p>URLを開くと最初に表示されるのがホーム画面です。登録されたハウスがカード形式で並んでいます。</p>
+
+    <pre>┌───────────────────────────────────────┐
+│ 🌳 農場 木管理   [時間管理]  [ホーム]   │ ← 上部ナビゲーション
+└───────────────────────────────────────┘
+
+┌────────────────────────────────┐
+│ 1号棟                          │
+│ 木 24本   正常:20  注意:3  病気:1│ ← ハウスカード
+│                   [詳細を見る] │
+└────────────────────────────────┘
+
+         ＋ 新しいハウスを追加</pre>
+
+    <h3>ハウスの追加</h3>
+    <div class="step"><span class="step-num">1</span><span>画面下部の「＋ 新しいハウスを追加」ボタンを押す</span></div>
+    <div class="step"><span class="step-num">2</span><span>ハウス名・行数・列数を入力する（例：1号棟、6行 × 4列）</span></div>
+    <div class="step"><span class="step-num">3</span><span>「保存」を押す</span></div>
+    <p class="mt-2 text-muted">行数と列数はハウスに実際に植えてある木の配置に合わせて設定します。後から変更も可能です。</p>
+
+    <h3>ハウスの削除</h3>
+    <p>ハウス詳細画面の右上「編集」→「削除」から削除できます。</p>
+    <div class="warn-box">
+      <i class="bi bi-exclamation-triangle-fill me-1"></i>削除すると、そのハウスの木・写真・作業記録がすべて消えます。間違えないよう注意してください。
+    </div>
+  </div>
+
+  <!-- 3. ハウス詳細 -->
+  <div class="section-card" id="house">
+    <h2><i class="bi bi-tree-fill me-2"></i>3. ハウス詳細画面</h2>
+    <p>ホームでハウスのカードをタップすると、ハウス詳細画面が開きます。</p>
+
+    <h3>木のグリッド表示</h3>
+    <p>ハウスに植えてある木が格子状（グリッド）に表示されます。各マスが木1本を表しています。<strong>マスの色が木の状態</strong>を示します。</p>
+
+    <table class="table table-bordered">
+      <thead class="table-light">
+        <tr><th>色</th><th>状態</th><th>意味</th></tr>
+      </thead>
+      <tbody>
+        <tr>
+          <td><span class="status-badge badge-normal">緑</span></td>
+          <td><strong>正常</strong></td>
+          <td>健康な状態</td>
+        </tr>
+        <tr>
+          <td><span class="status-badge badge-caution">オレンジ</span></td>
+          <td><strong>注意</strong></td>
+          <td>様子を見たほうがよい</td>
+        </tr>
+        <tr>
+          <td><span class="status-badge badge-sick">赤</span></td>
+          <td><strong>病気</strong></td>
+          <td>治療・対応が必要</td>
+        </tr>
+        <tr>
+          <td><span class="status-badge badge-dead">グレー</span></td>
+          <td><strong>枯死</strong></td>
+          <td>枯れてしまった木</td>
+        </tr>
+      </tbody>
+    </table>
+
+    <pre>     1列  2列  3列  4列
+1行 [緑 ] [緑 ] [橙 ] [緑 ]
+2行 [緑 ] [赤 ] [緑 ] [緑 ]   ← マスをタップ → 木の詳細へ
+3行 [緑 ] [緑 ] [緑 ] [灰 ]</pre>
+
+    <h3>作業時間の打刻</h3>
+    <p>ハウス詳細画面の上部に「作業開始」ボタンがあります。</p>
+
+    <table class="table table-bordered">
+      <thead class="table-light">
+        <tr><th>操作</th><th>手順</th></tr>
+      </thead>
+      <tbody>
+        <tr>
+          <td><strong>作業を始めるとき</strong></td>
+          <td>
+            「作業開始」ボタンを押す →
+            作業の種類を入力（例：剪定）→
+            経過時間がリアルタイムで表示される
+          </td>
+        </tr>
+        <tr>
+          <td><strong>作業が終わったとき</strong></td>
+          <td>「作業終了」ボタンを押す → 作業時間（〇時間〇分）が表示される</td>
+        </tr>
+      </tbody>
+    </table>
+
+    <div class="info-box">
+      <i class="bi bi-lightbulb-fill me-1"></i>
+      作業の種類は自由に入力できます。過去に入力した作業名は候補として表示されるので、選んで入力の手間を省けます。
+    </div>
+
+    <h3>ハウスの編集</h3>
+    <p>右上の「編集」ボタンから、ハウス名・行数・列数を変更できます。</p>
+  </div>
+
+  <!-- 4. 木の管理 -->
+  <div class="section-card" id="tree">
+    <h2><i class="bi bi-flower1 me-2"></i>4. 木の管理</h2>
+    <p>グリッドのマスをタップすると、その木の詳細画面が開きます。</p>
+
+    <h3>状態の変更</h3>
+    <p>画面上部に4つのボタンが並んでいます。現在の状態のボタンが選択されています。ボタンを押すと即座に保存され、グリッドの色もすぐに変わります。</p>
+    <div class="d-flex flex-wrap gap-2 my-2">
+      <span class="status-badge badge-normal">正常</span>
+      <span class="status-badge badge-caution">注意</span>
+      <span class="status-badge badge-sick">病気</span>
+      <span class="status-badge badge-dead">枯死</span>
+    </div>
+
+    <h3>メモの記録</h3>
+    <p>「メモ」欄に気になることを自由に入力できます。入力後「保存」ボタンを押してください。日付は自動で記録されます。</p>
+
+    <h3>写真の撮影・追加</h3>
+    <div class="step"><span class="step-num">1</span><span>「写真を追加」ボタンを押す</span></div>
+    <div class="step"><span class="step-num">2</span><span>スマートフォンのカメラが起動する（またはカメラロールから選択できる）</span></div>
+    <div class="step"><span class="step-num">3</span><span>撮影・選択すると自動で保存される</span></div>
+    <p class="mt-2">写真は画面下部にサムネイル一覧で表示されます。タップすると大きく見られます。写真は容量を節約するため自動的に縮小されます。</p>
+    <p>写真を削除するには、サムネイルの右上の「×」ボタンを押します。</p>
+  </div>
+
+  <!-- 5. 作業チェックリスト -->
+  <div class="section-card" id="work">
+    <h2><i class="bi bi-check2-square me-2"></i>5. 作業チェックリスト</h2>
+    <p>ハウス詳細画面の下部に「作業記録」のセクションがあります。農薬散布・剪定などの作業の進捗をハウス単位で管理できます。</p>
+
+    <h3>作業の追加</h3>
+    <div class="step"><span class="step-num">1</span><span>「新しい作業を追加」ボタンを押す</span></div>
+    <div class="step"><span class="step-num">2</span><span>作業名を入力する（例：5月第1回 農薬散布）</span></div>
+    <div class="step"><span class="step-num">3</span><span>作業日を入力する</span></div>
+    <div class="step"><span class="step-num">4</span><span>「保存」を押す</span></div>
+
+    <h3>チェックの付け方</h3>
+    <p>作業を開くと、そのハウスの全木がグリッドで表示されます。作業済みの木をタップするとチェックが入り（緑色に変わる）、もう一度タップするとチェックが外れます。</p>
+
+    <pre>作業：5月第1回 農薬散布
+
+     1列   2列   3列   4列
+1行 [済✓] [済✓] [済✓] [済✓]
+2行 [済✓] [済✓] [    ] [    ]  ← ここまで作業済み
+3行 [    ] [    ] [    ] [    ]</pre>
+
+    <h3>作業の削除</h3>
+    <p>作業詳細画面の下部にある「この作業を削除」ボタンから削除できます。</p>
+  </div>
+
+  <!-- 6. 時間管理 -->
+  <div class="section-card" id="time">
+    <h2><i class="bi bi-clock-history me-2"></i>6. 時間管理（打刻）</h2>
+    <p>作業時間の記録は2か所で行います。<strong>ハウスの詳細画面</strong>で打刻し、<strong>時間管理ページ</strong>で一覧を確認します。</p>
+
+    <h3>作業時間の打刻（ハウス詳細画面）</h3>
+
+    <div class="info-box mb-3">
+      <strong><i class="bi bi-info-circle me-1"></i>基本の流れ：</strong>
+      ハウスに入ったら「作業開始」→ 終わったら「作業終了」を押すだけです。
+    </div>
+
+    <h5 class="text-success">▶ 開始するとき</h5>
+    <div class="step"><span class="step-num">1</span><span>作業するハウスの詳細画面を開く</span></div>
+    <div class="step"><span class="step-num">2</span><span>「作業開始」ボタンを押す</span></div>
+    <div class="step"><span class="step-num">3</span><span>作業の種類を入力する（例：剪定、農薬散布）</span></div>
+    <div class="step"><span class="step-num">4</span><span>経過時間がリアルタイムで画面に表示される</span></div>
+
+    <h5 class="text-danger mt-3">■ 終了するとき</h5>
+    <div class="step"><span class="step-num">1</span><span>同じハウスの詳細画面を開く</span></div>
+    <div class="step"><span class="step-num">2</span><span>「作業終了」ボタンを押す</span></div>
+    <div class="step"><span class="step-num">3</span><span>作業時間（〇時間〇分）がポップアップで表示される</span></div>
+
+    <p class="mt-3">1日に複数のハウスで作業した場合は、それぞれのハウスで開始・終了を行います。</p>
+
+    <h3>時間管理ページ（一覧）</h3>
+    <p>上部ナビゲーションの「<strong>時間管理</strong>」ボタンを押すと一覧ページが開きます。記録は<strong>日付ごと</strong>にまとめて表示されます。</p>
+
+    <pre>┌───────────────────────────────────────────┐
+│ 10月1日（水）                  合計 3時間25分 │
+│  1号棟  剪定      9:00 〜 11:30    2時間30分 │
+│  2号棟  農薬散布  13:00 〜 13:55      55分   │
+└───────────────────────────────────────────┘
+┌───────────────────────────────────────────┐
+│ 9月30日（火）                  合計 2時間10分 │
+│  3号棟  水やり    8:30 〜 10:40    2時間10分 │
+└───────────────────────────────────────────┘</pre>
+
+    <p>過去の月は画面上部の「◀ 前月」ボタンで移動できます。</p>
+
+    <h3>記録の削除</h3>
+    <p>各セッションの右端にある「🗑」ボタンを押すと、その打刻記録を削除できます。</p>
+  </div>
+
+  <!-- 7. 集計 -->
+  <div class="section-card" id="summary">
+    <h2><i class="bi bi-bar-chart-fill me-2"></i>7. 集計</h2>
+    <p>時間管理ページ右上の「<strong>集計</strong>」ボタンを押すと集計ページが開きます。打刻したすべての記録が自動で集計されます。</p>
+
+    <h3>月別 合計時間</h3>
+    <p>月ごとの合計作業時間と稼働日数が一覧で表示されます。月名をタップするとその月の打刻一覧に移動します。</p>
+
+    <table class="table table-bordered">
+      <thead class="table-light">
+        <tr><th>年月</th><th class="text-center">稼働日数</th><th class="text-end">合計時間</th></tr>
+      </thead>
+      <tbody>
+        <tr><td>2026年10月</td><td class="text-center">3日</td><td class="text-end text-success fw-bold">8時間45分</td></tr>
+        <tr><td>2026年9月</td><td class="text-center">18日</td><td class="text-end text-success fw-bold">62時間20分</td></tr>
+      </tbody>
+    </table>
+
+    <h3>作業の種類別 合計時間</h3>
+    <p>全期間の記録を作業種類（農薬散布・剪定など）ごとに集計します。どの作業に一番時間をかけているかを確認できます。</p>
+
+    <h3>ハウス別 作業時間</h3>
+    <p>全期間の記録をハウスごとに集計します。ハウス名をタップするとそのハウスの詳細画面に移動します。</p>
+  </div>
+
+  <!-- 8. エクスポート -->
+  <div class="section-card" id="export">
+    <h2><i class="bi bi-file-earmark-excel-fill me-2"></i>8. エクスポート（エクセル出力）</h2>
+    <p>記録したデータをエクセルファイル（.xlsx）として書き出せます。パソコンで開いて印刷したり、バックアップとして保存したりできます。</p>
+
+    <h3>出力できるファイル</h3>
+    <table class="table table-bordered">
+      <thead class="table-light">
+        <tr><th>ボタンの場所</th><th>出力ファイル名</th><th>内容</th></tr>
+      </thead>
+      <tbody>
+        <tr>
+          <td>時間管理ページ（一覧）</td>
+          <td>ハウス作業時間_YYYY-MM.xlsx</td>
+          <td>表示中の月のハウス別打刻一覧（日付・曜日・ハウス・作業種類・開始〜終了・時間）</td>
+        </tr>
+        <tr>
+          <td>集計ページ</td>
+          <td>ハウス作業時間_YYYY-MM.xlsx</td>
+          <td>今月のハウス別打刻一覧（日計サマリー付き）</td>
+        </tr>
+      </tbody>
+    </table>
+
+    <h3>出力手順</h3>
+    <div class="step"><span class="step-num">1</span><span>時間管理ページまたは集計ページを開く</span></div>
+    <div class="step"><span class="step-num">2</span><span>「エクセル」ボタンを押す</span></div>
+    <div class="step"><span class="step-num">3</span><span>端末のダウンロードフォルダに .xlsx ファイルが保存される</span></div>
+
+    <p class="mt-2">スマートフォンの場合は、ダウンロードしたファイルをメールやAirDropでパソコンに転送してください。</p>
+
+    <div class="warn-box">
+      <strong><i class="bi bi-exclamation-triangle-fill me-1"></i>バックアップについて：</strong>
+      データはブラウザ内に保存されているため、<strong>ブラウザのキャッシュ削除やアプリの削除でデータが消えます。</strong>月に1回はエクセル出力でバックアップを取ることを強くおすすめします。
+    </div>
+  </div>
+
+  <!-- 9. 更新履歴 -->
+  <div class="section-card" id="changelog">
+    <h2><i class="bi bi-clock-history me-2"></i>9. 更新履歴</h2>
+    <table class="table table-bordered changelog">
+      <thead class="table-light">
+        <tr><th>日付</th><th>内容</th></tr>
+      </thead>
+      <tbody>
+        <tr>
+          <td>2026-10-01</td>
+          <td>集計ページをハウスセッションベースに変更。月別・種類別・ハウス別の集計が全期間対象になった</td>
+        </tr>
+        <tr>
+          <td>2026-10-01</td>
+          <td>ハウス別打刻機能を追加。時間管理ページを日付グループ表示に刷新。エクスポート機能を更新</td>
+        </tr>
+        <tr>
+          <td>2026-10-01</td>
+          <td>初版公開。ハウス管理・木管理・作業チェックリスト・時間管理の基本機能</td>
+        </tr>
+      </tbody>
+    </table>
+  </div>
+
+</div>
+
+<footer>
+  <small>農場 木管理システム — <a href="index.html" class="text-white">アプリを開く</a></small>
+</footer>
+
+</body>
+</html>
