@@ -767,6 +767,476 @@ const VIEWS = {
 
 
 /* =====================================================================
+   TIMESTORE – 作業時間データ管理
+   ===================================================================== */
+const TIMESTORE = (() => {
+  const KEY = 'farm_time';
+
+  function load() {
+    try { return JSON.parse(localStorage.getItem(KEY)) || {}; } catch { return {}; }
+  }
+  function save(d) { localStorage.setItem(KEY, JSON.stringify(d)); }
+
+  function init() {
+    const d = load();
+    if (!d.records)       d.records       = [];
+    if (!d.monthlyTotals) d.monthlyTotals = [];
+    if (!d.nextId)        d.nextId        = 1;
+    save(d);
+    _trim(d);
+  }
+
+  // 2ヶ月より古いレコードを月次集計に移動して削除
+  function _trim(d) {
+    const now   = new Date();
+    const cutoff = new Date(now.getFullYear(), now.getMonth() - 1, 1); // 先月1日
+    const cutStr = cutoff.toISOString().slice(0,10);
+    const old   = d.records.filter(r => r.date < cutStr);
+    if (!old.length) return;
+
+    const byMonth = {};
+    old.forEach(r => {
+      const m = r.date.slice(0,7);
+      if (!byMonth[m]) byMonth[m] = { totalMinutes:0, workDays:0 };
+      byMonth[m].totalMinutes += calcMinutes(r);
+      byMonth[m].workDays++;
+    });
+
+    Object.entries(byMonth).forEach(([month, data]) => {
+      const ex = d.monthlyTotals.find(x => x.month === month);
+      if (ex) { ex.totalMinutes += data.totalMinutes; ex.workDays += data.workDays; }
+      else      d.monthlyTotals.push({ month, ...data });
+    });
+
+    d.records = d.records.filter(r => r.date >= cutStr);
+    save(d);
+  }
+
+  function calcMinutes(r) {
+    if (!r.startTime || !r.endTime) return 0;
+    const [sh,sm] = r.startTime.split(':').map(Number);
+    const [eh,em] = r.endTime.split(':').map(Number);
+    return Math.max(0, (eh*60+em) - (sh*60+sm) - (r.breakMinutes||0));
+  }
+
+  function fmtMin(min) {
+    if (!min || min < 0) return '―';
+    return `${Math.floor(min/60)}時間${min%60 ? (min%60)+'分' : ''}`;
+  }
+
+  function todayStr() { return new Date().toISOString().slice(0,10); }
+  function nowTime()  { return new Date().toTimeString().slice(0,5); }
+
+  // 当月 YYYY-MM を返す
+  function currentMonth() { return new Date().toISOString().slice(0,7); }
+
+  function getRecords(ym) {
+    return load().records.filter(r => r.date.startsWith(ym))
+                         .sort((a,b) => b.date.localeCompare(a.date));
+  }
+  function getRecord(id) { return load().records.find(r => r.id === id); }
+
+  function addRecord(r) {
+    const d = load();
+    r.id = d.nextId++;
+    r.createdAt = new Date().toLocaleString('ja-JP');
+    d.records.push(r);
+    save(d);
+    return r;
+  }
+  function updateRecord(r) {
+    const d = load();
+    const i = d.records.findIndex(x => x.id === r.id);
+    if (i >= 0) { d.records[i] = r; save(d); }
+  }
+  function deleteRecord(id) {
+    const d = load();
+    d.records = d.records.filter(r => r.id !== id);
+    save(d);
+  }
+
+  function getMonthlyTotals() {
+    return load().monthlyTotals.sort((a,b) => b.month.localeCompare(a.month));
+  }
+
+  // 月サマリー（詳細レコードから集計）
+  function getMonthSummary(ym) {
+    const recs = getRecords(ym);
+    return {
+      totalMinutes: recs.reduce((s,r) => s + calcMinutes(r), 0),
+      workDays: recs.length
+    };
+  }
+
+  return { init, calcMinutes, fmtMin, todayStr, nowTime, currentMonth,
+           getRecords, getRecord, addRecord, updateRecord, deleteRecord,
+           getMonthlyTotals, getMonthSummary };
+})();
+
+
+/* =====================================================================
+   EXCEL EXPORT
+   ===================================================================== */
+function exportRecordsExcel(ym) {
+  const records = TIMESTORE.getRecords(ym);
+  const rows = [
+    ['日付','開始時間','終了時間','休憩(分)','実働時間','作業内容','翌日の予定','その他メモ']
+  ];
+  records.forEach(r => {
+    rows.push([
+      r.date,
+      r.startTime || '',
+      r.endTime   || '',
+      r.breakMinutes ?? '',
+      TIMESTORE.calcMinutes(r) ? TIMESTORE.fmtMin(TIMESTORE.calcMinutes(r)) : '',
+      r.workContent || '',
+      r.nextPlan    || '',
+      r.notes       || ''
+    ]);
+  });
+  // 合計行
+  const total = records.reduce((s,r) => s + TIMESTORE.calcMinutes(r), 0);
+  rows.push(['合計', '', '', '', TIMESTORE.fmtMin(total), '', '', '']);
+
+  const ws = XLSX.utils.aoa_to_sheet(rows);
+  ws['!cols'] = [9,8,8,8,10,30,30,20].map(w=>({wch:w}));
+  const wb = XLSX.utils.book_new();
+  XLSX.utils.book_append_sheet(wb, ws, ym);
+  XLSX.writeFile(wb, `作業時間_${ym}.xlsx`);
+}
+
+function exportMonthlyExcel() {
+  const totals  = TIMESTORE.getMonthlyTotals();
+  // 現在月の集計も含める
+  const cur     = TIMESTORE.currentMonth();
+  const curSum  = TIMESTORE.getMonthSummary(cur);
+  const allRows = [[cur, curSum.workDays, TIMESTORE.fmtMin(curSum.totalMinutes)],
+                   ...totals.map(t=>[t.month, t.workDays, TIMESTORE.fmtMin(t.totalMinutes)])];
+  // 重複除去
+  const seen = new Set();
+  const deduped = allRows.filter(r=>{ if(seen.has(r[0])) return false; seen.add(r[0]); return true; });
+
+  const rows = [['年月','稼働日数','合計作業時間'], ...deduped];
+  const ws   = XLSX.utils.aoa_to_sheet(rows);
+  ws['!cols'] = [{wch:10},{wch:10},{wch:14}];
+  const wb   = XLSX.utils.book_new();
+  XLSX.utils.book_append_sheet(wb, ws, '月別集計');
+  XLSX.writeFile(wb, `月別作業時間集計.xlsx`);
+}
+
+
+/* =====================================================================
+   TIME VIEWS
+   ===================================================================== */
+Object.assign(VIEWS, {
+
+  /* ── 月別一覧 ── */
+  timeList(ym) {
+    if (!ym) ym = TIMESTORE.currentMonth();
+    const [y, m] = ym.split('-').map(Number);
+    const prevYm = new Date(y, m-2, 1).toISOString().slice(0,7);
+    const nextYm = new Date(y, m,   1).toISOString().slice(0,7);
+    const isCurrentMonth = ym === TIMESTORE.currentMonth();
+    const records = TIMESTORE.getRecords(ym);
+    const summary = TIMESTORE.getMonthSummary(ym);
+    const today   = TIMESTORE.todayStr();
+
+    const rows = records.map(r => {
+      const min = TIMESTORE.calcMinutes(r);
+      const isToday = r.date === today;
+      return `
+      <div class="card mb-2 ${isToday ? 'border-success border-2' : ''}">
+        <div class="card-body py-2 px-3">
+          <div class="d-flex align-items-center gap-2 flex-wrap">
+            <div class="fw-bold" style="min-width:80px;">
+              ${r.date.slice(5).replace('-','/')}（${['日','月','火','水','木','金','土'][new Date(r.date).getDay()]}）
+              ${isToday ? '<span class="badge bg-success ms-1">今日</span>' : ''}
+            </div>
+            <div class="text-muted small">
+              ${r.startTime||'―'} ～ ${r.endTime||'―'}
+              ${r.breakMinutes ? `（休憩${r.breakMinutes}分）` : ''}
+            </div>
+            <span class="ms-auto fw-bold text-success">${TIMESTORE.fmtMin(min)}</span>
+            <a href="#/time/${r.id}/edit" class="btn btn-sm btn-outline-secondary">
+              <i class="bi bi-pencil"></i>
+            </a>
+          </div>
+          ${r.workContent ? `<div class="text-muted small mt-1 text-truncate">${r.workContent}</div>` : ''}
+        </div>
+      </div>`;
+    }).join('');
+
+    this.render(`
+      <div class="d-flex align-items-center mb-3 gap-2 flex-wrap">
+        <h2 class="fw-bold mb-0"><i class="bi bi-clock-history me-2 text-success"></i>作業時間管理</h2>
+        <a href="#/time/monthly" class="btn btn-farm-outline ms-auto">
+          <i class="bi bi-bar-chart me-1"></i>月別集計
+        </a>
+      </div>
+
+      <!-- 今日の記録ボタン -->
+      <a href="#/time/new" class="btn btn-farm btn-lg w-100 mb-4 py-3" style="font-size:1.2rem;">
+        <i class="bi bi-plus-circle-fill me-2"></i>今日の作業を記録する
+      </a>
+
+      <!-- 月ナビ -->
+      <div class="d-flex align-items-center justify-content-between mb-3">
+        <a href="#/time/${prevYm}" class="btn btn-farm-outline">
+          <i class="bi bi-chevron-left me-1"></i>${prevYm.replace('-','年')}月
+        </a>
+        <h4 class="mb-0 fw-bold">${y}年 ${m}月</h4>
+        ${isCurrentMonth
+          ? '<span class="btn btn-outline-secondary disabled">今月</span>'
+          : `<a href="#/time/${nextYm}" class="btn btn-farm-outline">${nextYm.replace('-','年')}月<i class="bi bi-chevron-right ms-1"></i></a>`
+        }
+      </div>
+
+      <!-- 月集計バナー -->
+      <div class="card mb-3" style="background:linear-gradient(135deg,#2d6a4f,#40916c);color:#fff;">
+        <div class="card-body py-3 d-flex gap-4 align-items-center">
+          <div class="text-center">
+            <div style="font-size:.8rem;opacity:.8;">稼働日数</div>
+            <div class="fw-bold fs-4">${summary.workDays}日</div>
+          </div>
+          <div class="text-center">
+            <div style="font-size:.8rem;opacity:.8;">合計作業時間</div>
+            <div class="fw-bold fs-4">${TIMESTORE.fmtMin(summary.totalMinutes)}</div>
+          </div>
+          <button class="btn btn-light ms-auto" id="exportMonth">
+            <i class="bi bi-file-earmark-excel-fill me-1 text-success"></i>エクセル出力
+          </button>
+        </div>
+      </div>
+
+      <!-- レコード一覧 -->
+      ${records.length ? rows : '<p class="text-muted text-center py-4"><i class="bi bi-calendar-x display-6 d-block mb-2"></i>この月の記録はまだありません</p>'}
+    `);
+
+    $('#exportMonth').onclick = () => exportRecordsExcel(ym);
+  },
+
+  /* ── 記録フォーム（新規・編集） ── */
+  timeForm(id) {
+    const isEdit = id !== undefined;
+    const r = isEdit ? TIMESTORE.getRecord(+id) : null;
+    const today = TIMESTORE.todayStr();
+    const nowT  = TIMESTORE.nowTime();
+
+    this.render(`
+      <div class="mb-3">
+        <a href="#/time" class="btn btn-farm-outline"><i class="bi bi-arrow-left me-1"></i>一覧に戻る</a>
+      </div>
+      <div class="card">
+        <div class="card-header py-3">
+          <h4 class="mb-0">
+            <i class="bi bi-${isEdit ? 'pencil' : 'plus-circle'}-fill me-2"></i>
+            ${isEdit ? '記録を編集' : '作業を記録する'}
+          </h4>
+        </div>
+        <div class="card-body p-4">
+          <form id="timeForm">
+
+            <div class="mb-4">
+              <label class="form-label fw-bold fs-5">日付</label>
+              <input type="date" name="date" class="form-control form-control-lg"
+                     value="${r?.date || today}" required>
+            </div>
+
+            <!-- 開始時間 -->
+            <div class="mb-4">
+              <label class="form-label fw-bold fs-5">開始時間</label>
+              <div class="d-flex gap-2 align-items-center">
+                <input type="time" name="startTime" id="startTime" class="form-control form-control-lg"
+                       value="${r?.startTime || ''}">
+                <button type="button" class="btn btn-farm px-4" id="setStart" title="今の時刻をセット">
+                  <i class="bi bi-clock me-1"></i>今
+                </button>
+              </div>
+            </div>
+
+            <!-- 終了時間 -->
+            <div class="mb-4">
+              <label class="form-label fw-bold fs-5">終了時間</label>
+              <div class="d-flex gap-2 align-items-center">
+                <input type="time" name="endTime" id="endTime" class="form-control form-control-lg"
+                       value="${r?.endTime || ''}">
+                <button type="button" class="btn btn-farm px-4" id="setEnd" title="今の時刻をセット">
+                  <i class="bi bi-clock me-1"></i>今
+                </button>
+              </div>
+            </div>
+
+            <!-- 休憩 -->
+            <div class="mb-4">
+              <label class="form-label fw-bold fs-5">休憩時間（分）</label>
+              <div class="d-flex gap-2 flex-wrap align-items-center">
+                <input type="number" name="breakMinutes" id="breakMin" class="form-control form-control-lg"
+                       style="max-width:120px;" min="0" max="600" value="${r?.breakMinutes ?? 60}">
+                ${[0,30,60,90].map(v=>`
+                  <button type="button" class="btn btn-outline-secondary break-preset" data-val="${v}">${v}分</button>
+                `).join('')}
+              </div>
+            </div>
+
+            <!-- 実働時間プレビュー -->
+            <div class="alert alert-success py-2 mb-4" id="timePreview">
+              <i class="bi bi-hourglass-split me-2"></i>実働時間: <strong id="previewVal">―</strong>
+            </div>
+
+            <!-- 作業内容 -->
+            <div class="mb-4">
+              <label class="form-label fw-bold fs-5">作業内容</label>
+              <textarea name="workContent" class="form-control" rows="3"
+                        placeholder="今日やった作業を書いてください">${r?.workContent || ''}</textarea>
+            </div>
+
+            <!-- 翌日の予定 -->
+            <div class="mb-4">
+              <label class="form-label fw-bold fs-5">翌日の予定</label>
+              <textarea name="nextPlan" class="form-control" rows="2"
+                        placeholder="明日やること">${r?.nextPlan || ''}</textarea>
+            </div>
+
+            <!-- その他 -->
+            <div class="mb-4">
+              <label class="form-label fw-bold fs-5">その他・気になること</label>
+              <textarea name="notes" class="form-control" rows="2"
+                        placeholder="何かあれば">${r?.notes || ''}</textarea>
+            </div>
+
+            <button type="submit" class="btn btn-farm btn-lg w-100">
+              <i class="bi bi-check-lg me-1"></i>保存する
+            </button>
+          </form>
+
+          ${isEdit ? `
+          <div class="text-center mt-3">
+            <button class="btn btn-outline-danger btn-sm" id="delRecord">
+              <i class="bi bi-trash me-1"></i>この記録を削除
+            </button>
+          </div>` : ''}
+        </div>
+      </div>`);
+
+    // 今の時刻ボタン
+    $('#setStart').onclick = () => { document.getElementById('startTime').value = TIMESTORE.nowTime(); updatePreview(); };
+    $('#setEnd').onclick   = () => { document.getElementById('endTime').value   = TIMESTORE.nowTime(); updatePreview(); };
+
+    // 休憩プリセット
+    document.querySelectorAll('.break-preset').forEach(btn => {
+      btn.onclick = () => { document.getElementById('breakMin').value = btn.dataset.val; updatePreview(); };
+    });
+
+    // リアルタイム実働プレビュー
+    function updatePreview() {
+      const s = document.getElementById('startTime').value;
+      const e = document.getElementById('endTime').value;
+      const b = +document.getElementById('breakMin').value || 0;
+      if (s && e) {
+        const [sh,sm] = s.split(':').map(Number);
+        const [eh,em] = e.split(':').map(Number);
+        const min = Math.max(0, (eh*60+em)-(sh*60+sm)-b);
+        document.getElementById('previewVal').textContent = TIMESTORE.fmtMin(min);
+      } else {
+        document.getElementById('previewVal').textContent = '―';
+      }
+    }
+    document.getElementById('startTime').addEventListener('input', updatePreview);
+    document.getElementById('endTime').addEventListener('input', updatePreview);
+    document.getElementById('breakMin').addEventListener('input', updatePreview);
+    updatePreview();
+
+    // 保存
+    $('#timeForm').addEventListener('submit', e => {
+      e.preventDefault();
+      const f = new FormData(e.target);
+      const rec = {
+        date:         f.get('date'),
+        startTime:    f.get('startTime'),
+        endTime:      f.get('endTime'),
+        breakMinutes: +f.get('breakMinutes') || 0,
+        workContent:  f.get('workContent'),
+        nextPlan:     f.get('nextPlan'),
+        notes:        f.get('notes')
+      };
+      if (isEdit) { TIMESTORE.updateRecord({...r, ...rec}); flash('更新しました'); }
+      else        { TIMESTORE.addRecord(rec); flash('記録しました'); }
+      location.hash = `#/time/${rec.date.slice(0,7)}`;
+    });
+
+    if (isEdit) {
+      $('#delRecord').onclick = () => {
+        if (!confirm('この記録を削除しますか？')) return;
+        TIMESTORE.deleteRecord(+id);
+        flash('削除しました');
+        location.hash = '#/time';
+      };
+    }
+  },
+
+  /* ── 月別集計一覧 ── */
+  timeMonthly() {
+    const totals = TIMESTORE.getMonthlyTotals();
+    const cur    = TIMESTORE.currentMonth();
+    const curSum = TIMESTORE.getMonthSummary(cur);
+
+    // 現在月を先頭に表示（重複しないよう除外してマージ）
+    const rows = [{ month: cur, ...curSum }, ...totals.filter(t => t.month !== cur)];
+
+    const tableRows = rows.map(t => `
+      <tr>
+        <td class="fw-bold">
+          <a href="#/time/${t.month}" class="text-decoration-none">
+            ${t.month.replace('-','年')}月
+          </a>
+          ${t.month === cur ? '<span class="badge bg-success ms-1">今月</span>' : ''}
+        </td>
+        <td class="text-center">${t.workDays}日</td>
+        <td class="text-end fw-bold text-success">${TIMESTORE.fmtMin(t.totalMinutes)}</td>
+      </tr>`).join('');
+
+    this.render(`
+      <div class="d-flex align-items-center mb-3 gap-2">
+        <a href="#/time" class="btn btn-farm-outline"><i class="bi bi-arrow-left me-1"></i>月別一覧</a>
+        <h2 class="fw-bold mb-0 ms-1">
+          <i class="bi bi-bar-chart-fill me-2 text-success"></i>月別集計
+        </h2>
+        <button class="btn btn-farm ms-auto" id="exportAll">
+          <i class="bi bi-file-earmark-excel-fill me-1"></i>全期間をエクセル出力
+        </button>
+      </div>
+
+      <div class="card">
+        <div class="card-header py-2">
+          <i class="bi bi-table me-2"></i>月ごとの合計作業時間
+        </div>
+        <div class="card-body p-0">
+          <table class="table table-hover mb-0">
+            <thead class="table-light">
+              <tr>
+                <th>年月</th>
+                <th class="text-center">稼働日数</th>
+                <th class="text-end">合計作業時間</th>
+              </tr>
+            </thead>
+            <tbody>
+              ${tableRows || '<tr><td colspan="3" class="text-center text-muted py-4">データがありません</td></tr>'}
+            </tbody>
+          </table>
+        </div>
+      </div>
+
+      <p class="text-muted small mt-3">
+        <i class="bi bi-info-circle me-1"></i>
+        詳細レコードは直近2ヶ月分を保持。それ以前は月別集計としてこの画面に記録されます。
+      </p>`);
+
+    $('#exportAll').onclick = () => exportMonthlyExcel();
+  }
+});
+
+
+/* =====================================================================
    ROUTING 設定 & 起動
    ===================================================================== */
 ROUTER.add(/^$/, ()=>VIEWS.houseList());
@@ -776,6 +1246,12 @@ ROUTER.add(/^house\/(\d+)\/edit$/, id=>VIEWS.houseForm(id));
 ROUTER.add(/^tree\/(\d+)$/, id=>VIEWS.treeDetail(id));
 ROUTER.add(/^house\/(\d+)\/work\/new$/, hid=>VIEWS.workForm(hid));
 ROUTER.add(/^house\/(\d+)\/work\/(\d+)$/, (hid,wid)=>VIEWS.workDetail(hid,wid));
+ROUTER.add(/^time$/, ()=>VIEWS.timeList());
+ROUTER.add(/^time\/new$/, ()=>VIEWS.timeForm());
+ROUTER.add(/^time\/monthly$/, ()=>VIEWS.timeMonthly());
+ROUTER.add(/^time\/(\d+)\/edit$/, id=>VIEWS.timeForm(id));
+ROUTER.add(/^time\/(\d{4}-\d{2})$/, ym=>VIEWS.timeList(ym));
 
 STORE.init();
+TIMESTORE.init();
 ROUTER.dispatch();
