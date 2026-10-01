@@ -767,7 +767,7 @@ const VIEWS = {
 
 
 /* =====================================================================
-   TIMESTORE – 作業時間データ管理
+   TIMESTORE – 作業時間データ管理（v3）
    ===================================================================== */
 const TIMESTORE = (() => {
   const KEY = 'farm_time';
@@ -779,21 +779,20 @@ const TIMESTORE = (() => {
 
   function init() {
     const d = load();
-    if (!d.records)       d.records       = [];
-    if (!d.monthlyTotals) d.monthlyTotals = [];
-    if (!d.nextId)        d.nextId        = 1;
+    if (!d.records)         d.records         = [];
+    if (!d.monthlyTotals)   d.monthlyTotals   = [];
+    if (!d.workTypeHistory) d.workTypeHistory  = [];
+    if (!d.nextId)          d.nextId          = 1;
     save(d);
     _trim(d);
   }
 
-  // 2ヶ月より古いレコードを月次集計に移動して削除
+  // 2ヶ月より古いレコードを月次集計に移動
   function _trim(d) {
-    const now   = new Date();
-    const cutoff = new Date(now.getFullYear(), now.getMonth() - 1, 1); // 先月1日
-    const cutStr = cutoff.toISOString().slice(0,10);
-    const old   = d.records.filter(r => r.date < cutStr);
+    const now    = new Date();
+    const cutStr = new Date(now.getFullYear(), now.getMonth() - 1, 1).toISOString().slice(0,10);
+    const old    = d.records.filter(r => r.date < cutStr);
     if (!old.length) return;
-
     const byMonth = {};
     old.forEach(r => {
       const m = r.date.slice(0,7);
@@ -801,76 +800,176 @@ const TIMESTORE = (() => {
       byMonth[m].totalMinutes += calcMinutes(r);
       byMonth[m].workDays++;
     });
-
     Object.entries(byMonth).forEach(([month, data]) => {
       const ex = d.monthlyTotals.find(x => x.month === month);
       if (ex) { ex.totalMinutes += data.totalMinutes; ex.workDays += data.workDays; }
       else      d.monthlyTotals.push({ month, ...data });
     });
-
     d.records = d.records.filter(r => r.date >= cutStr);
     save(d);
+  }
+
+  /* --- 計算ヘルパー --- */
+  function calcBreakMin(breaks) {
+    if (!breaks || !breaks.length) return 0;
+    return breaks.reduce((sum, b) => {
+      if (!b.start || !b.end) return sum;
+      const [bs,bm] = b.start.split(':').map(Number);
+      const [es,em] = b.end.split(':').map(Number);
+      return sum + Math.max(0, (es*60+em)-(bs*60+bm));
+    }, 0);
   }
 
   function calcMinutes(r) {
     if (!r.startTime || !r.endTime) return 0;
     const [sh,sm] = r.startTime.split(':').map(Number);
     const [eh,em] = r.endTime.split(':').map(Number);
-    return Math.max(0, (eh*60+em) - (sh*60+sm) - (r.breakMinutes||0));
+    const brk = r.breaks ? calcBreakMin(r.breaks) : (r.breakMinutes||0);
+    return Math.max(0, (eh*60+em)-(sh*60+sm)-brk);
   }
 
   function fmtMin(min) {
     if (!min || min < 0) return '―';
-    return `${Math.floor(min/60)}時間${min%60 ? (min%60)+'分' : ''}`;
+    const h = Math.floor(min/60), m = min%60;
+    return h > 0 ? `${h}時間${m>0?m+'分':''}` : `${m}分`;
   }
 
-  function todayStr() { return new Date().toISOString().slice(0,10); }
-  function nowTime()  { return new Date().toTimeString().slice(0,5); }
-
-  // 当月 YYYY-MM を返す
+  function todayStr()     { return new Date().toISOString().slice(0,10); }
+  function nowTime()      { return new Date().toTimeString().slice(0,5); }
   function currentMonth() { return new Date().toISOString().slice(0,7); }
 
-  function getRecords(ym) {
-    return load().records.filter(r => r.date.startsWith(ym))
-                         .sort((a,b) => b.date.localeCompare(a.date));
-  }
-  function getRecord(id) { return load().records.find(r => r.id === id); }
-
-  function addRecord(r) {
+  /* --- 作業種類履歴 --- */
+  function getWorkTypeHistory() { return load().workTypeHistory || []; }
+  function pushWorkType(type) {
+    if (!type) return;
     const d = load();
-    r.id = d.nextId++;
-    r.createdAt = new Date().toLocaleString('ja-JP');
-    d.records.push(r);
+    d.workTypeHistory = [type, ...d.workTypeHistory.filter(t=>t!==type)].slice(0,60);
     save(d);
+  }
+
+  /* --- アクティブ記録（進行中） --- */
+  function getActive()    { return load().activeRecord || null; }
+  function _saveActive(ar){ const d=load(); d.activeRecord=ar; save(d); }
+  function clearActive()  { const d=load(); delete d.activeRecord; save(d); }
+
+  function startWork() {
+    const ar = { date:todayStr(), startTime:nowTime(), breaks:[], state:'working',
+                 workType:'', houseIds:[], workContent:'', nextPlan:'', notes:'' };
+    _saveActive(ar);
+    return ar;
+  }
+  function startBreak() {
+    const d = load();
+    if (!d.activeRecord || d.activeRecord.state!=='working') return null;
+    d.activeRecord.breaks.push({ start:nowTime(), end:null });
+    d.activeRecord.state = 'on_break';
+    save(d);
+    return d.activeRecord;
+  }
+  function endBreak() {
+    const d = load();
+    if (!d.activeRecord || d.activeRecord.state!=='on_break') return null;
+    const last = d.activeRecord.breaks[d.activeRecord.breaks.length-1];
+    if (last && !last.end) last.end = nowTime();
+    d.activeRecord.state = 'working';
+    save(d);
+    return d.activeRecord;
+  }
+  function endWork() {
+    const d = load();
+    if (!d.activeRecord) return null;
+    const ar = d.activeRecord;
+    const et = nowTime();
+    // 開いている休憩を閉じる
+    if (ar.breaks.length) {
+      const last = ar.breaks[ar.breaks.length-1];
+      if (!last.end) last.end = et;
+    }
+    const rec = { id:d.nextId++, date:ar.date, startTime:ar.startTime, endTime:et,
+                  breaks:ar.breaks, workType:ar.workType||'', houseIds:ar.houseIds||[],
+                  workContent:ar.workContent||'', nextPlan:ar.nextPlan||'', notes:ar.notes||'',
+                  createdAt:new Date().toLocaleString('ja-JP') };
+    d.records.push(rec);
+    delete d.activeRecord;
+    save(d);
+    if (rec.workType) pushWorkType(rec.workType);
+    return rec;
+  }
+  // アクティブ記録の種類・ハウスを途中で更新
+  function updateActive(fields) {
+    const d = load();
+    if (!d.activeRecord) return;
+    Object.assign(d.activeRecord, fields);
+    save(d);
+  }
+
+  /* --- Records CRUD --- */
+  function getRecords(ym) {
+    return load().records.filter(r=>r.date.startsWith(ym))
+                         .sort((a,b)=>b.date.localeCompare(a.date)||b.id-a.id);
+  }
+  function getRecord(id)  { return load().records.find(r=>r.id===id); }
+  function addRecord(r) {
+    const d=load(); r.id=d.nextId++; r.createdAt=new Date().toLocaleString('ja-JP');
+    d.records.push(r); save(d);
+    if (r.workType) pushWorkType(r.workType);
     return r;
   }
   function updateRecord(r) {
-    const d = load();
-    const i = d.records.findIndex(x => x.id === r.id);
-    if (i >= 0) { d.records[i] = r; save(d); }
+    const d=load(), i=d.records.findIndex(x=>x.id===r.id);
+    if (i>=0){ d.records[i]=r; save(d); }
+    if (r.workType) pushWorkType(r.workType);
   }
   function deleteRecord(id) {
-    const d = load();
-    d.records = d.records.filter(r => r.id !== id);
-    save(d);
+    const d=load(); d.records=d.records.filter(r=>r.id!==id); save(d);
   }
 
+  /* --- Monthly --- */
   function getMonthlyTotals() {
-    return load().monthlyTotals.sort((a,b) => b.month.localeCompare(a.month));
+    return load().monthlyTotals.sort((a,b)=>b.month.localeCompare(a.month));
   }
-
-  // 月サマリー（詳細レコードから集計）
   function getMonthSummary(ym) {
     const recs = getRecords(ym);
-    return {
-      totalMinutes: recs.reduce((s,r) => s + calcMinutes(r), 0),
-      workDays: recs.length
-    };
+    return { totalMinutes:recs.reduce((s,r)=>s+calcMinutes(r),0), workDays:recs.length };
   }
 
-  return { init, calcMinutes, fmtMin, todayStr, nowTime, currentMonth,
+  /* --- 集計: ハウス別・種類別 --- */
+  function getTimeByHouseId(houseId) {
+    return load().records.filter(r=>r.houseIds&&r.houseIds.includes(houseId))
+                         .reduce((s,r)=>s+calcMinutes(r),0);
+  }
+  function getTimeByWorkType(ym) {
+    const result={};
+    getRecords(ym).forEach(r=>{
+      const wt=r.workType||'（未設定）';
+      result[wt]=(result[wt]||0)+calcMinutes(r);
+    });
+    return result;
+  }
+  function getAllTimeByHouse() {
+    const result={};
+    load().records.forEach(r=>{
+      (r.houseIds||[]).forEach(hid=>{
+        result[hid]=(result[hid]||0)+calcMinutes(r);
+      });
+    });
+    return result;
+  }
+  function getAllTimeByWorkType() {
+    const result={};
+    load().records.forEach(r=>{
+      const wt=r.workType||'（未設定）';
+      result[wt]=(result[wt]||0)+calcMinutes(r);
+    });
+    return result;
+  }
+
+  return { init, calcBreakMin, calcMinutes, fmtMin, todayStr, nowTime, currentMonth,
+           getWorkTypeHistory, pushWorkType,
+           getActive, startWork, startBreak, endBreak, endWork, updateActive, clearActive,
            getRecords, getRecord, addRecord, updateRecord, deleteRecord,
-           getMonthlyTotals, getMonthSummary };
+           getMonthlyTotals, getMonthSummary,
+           getTimeByHouseId, getTimeByWorkType, getAllTimeByHouse, getAllTimeByWorkType };
 })();
 
 
@@ -879,49 +978,52 @@ const TIMESTORE = (() => {
    ===================================================================== */
 function exportRecordsExcel(ym) {
   const records = TIMESTORE.getRecords(ym);
-  const rows = [
-    ['日付','開始時間','終了時間','休憩(分)','実働時間','作業内容','翌日の予定','その他メモ']
-  ];
+  const rows = [['日付','曜日','開始','終了','休憩(分)','実働時間','作業の種類','ハウス','作業内容','翌日の予定','その他メモ']];
+  const days = ['日','月','火','水','木','金','土'];
   records.forEach(r => {
-    rows.push([
-      r.date,
-      r.startTime || '',
-      r.endTime   || '',
-      r.breakMinutes ?? '',
-      TIMESTORE.calcMinutes(r) ? TIMESTORE.fmtMin(TIMESTORE.calcMinutes(r)) : '',
-      r.workContent || '',
-      r.nextPlan    || '',
-      r.notes       || ''
-    ]);
+    const brk  = TIMESTORE.calcBreakMin(r.breaks||[]);
+    const houseNames = (r.houseIds||[]).map(id=>{ const h=STORE.getHouse(id); return h?h.name:id; }).join('、');
+    rows.push([r.date, days[new Date(r.date).getDay()], r.startTime||'', r.endTime||'',
+               brk||'', TIMESTORE.fmtMin(TIMESTORE.calcMinutes(r)),
+               r.workType||'', houseNames, r.workContent||'', r.nextPlan||'', r.notes||'']);
   });
-  // 合計行
-  const total = records.reduce((s,r) => s + TIMESTORE.calcMinutes(r), 0);
-  rows.push(['合計', '', '', '', TIMESTORE.fmtMin(total), '', '', '']);
+  const total = records.reduce((s,r)=>s+TIMESTORE.calcMinutes(r),0);
+  rows.push(['合計','','','','', TIMESTORE.fmtMin(total),'','','','','']);
 
   const ws = XLSX.utils.aoa_to_sheet(rows);
-  ws['!cols'] = [9,8,8,8,10,30,30,20].map(w=>({wch:w}));
+  ws['!cols'] = [10,5,7,7,8,10,14,16,30,30,20].map(w=>({wch:w}));
   const wb = XLSX.utils.book_new();
   XLSX.utils.book_append_sheet(wb, ws, ym);
   XLSX.writeFile(wb, `作業時間_${ym}.xlsx`);
 }
 
 function exportMonthlyExcel() {
-  const totals  = TIMESTORE.getMonthlyTotals();
-  // 現在月の集計も含める
-  const cur     = TIMESTORE.currentMonth();
-  const curSum  = TIMESTORE.getMonthSummary(cur);
-  const allRows = [[cur, curSum.workDays, TIMESTORE.fmtMin(curSum.totalMinutes)],
-                   ...totals.map(t=>[t.month, t.workDays, TIMESTORE.fmtMin(t.totalMinutes)])];
-  // 重複除去
-  const seen = new Set();
-  const deduped = allRows.filter(r=>{ if(seen.has(r[0])) return false; seen.add(r[0]); return true; });
-
-  const rows = [['年月','稼働日数','合計作業時間'], ...deduped];
-  const ws   = XLSX.utils.aoa_to_sheet(rows);
+  const cur    = TIMESTORE.currentMonth();
+  const curSum = TIMESTORE.getMonthSummary(cur);
+  const totals = TIMESTORE.getMonthlyTotals();
+  const all    = [{ month:cur, ...curSum }, ...totals.filter(t=>t.month!==cur)];
+  const seen   = new Set();
+  const rows   = [['年月','稼働日数','合計作業時間'],
+    ...all.filter(r=>{ if(seen.has(r.month)) return false; seen.add(r.month); return true; })
+          .map(t=>[t.month, t.workDays, TIMESTORE.fmtMin(t.totalMinutes)])
+  ];
+  const ws = XLSX.utils.aoa_to_sheet(rows);
   ws['!cols'] = [{wch:10},{wch:10},{wch:14}];
-  const wb   = XLSX.utils.book_new();
+  const wb = XLSX.utils.book_new();
   XLSX.utils.book_append_sheet(wb, ws, '月別集計');
   XLSX.writeFile(wb, `月別作業時間集計.xlsx`);
+}
+
+function exportWorkTypeExcel() {
+  const byType = TIMESTORE.getAllTimeByWorkType();
+  const rows = [['作業の種類','合計時間'],
+    ...Object.entries(byType).sort((a,b)=>b[1]-a[1]).map(([t,m])=>[t, TIMESTORE.fmtMin(m)])
+  ];
+  const ws = XLSX.utils.aoa_to_sheet(rows);
+  ws['!cols'] = [{wch:20},{wch:14}];
+  const wb = XLSX.utils.book_new();
+  XLSX.utils.book_append_sheet(wb, ws, '作業種類別集計');
+  XLSX.writeFile(wb, `作業種類別集計.xlsx`);
 }
 
 
@@ -930,38 +1032,107 @@ function exportMonthlyExcel() {
    ===================================================================== */
 Object.assign(VIEWS, {
 
-  /* ── 月別一覧 ── */
+  /* ── 時間管理トップ（打刻＋月別一覧） ── */
   timeList(ym) {
     if (!ym) ym = TIMESTORE.currentMonth();
     const [y, m] = ym.split('-').map(Number);
     const prevYm = new Date(y, m-2, 1).toISOString().slice(0,7);
     const nextYm = new Date(y, m,   1).toISOString().slice(0,7);
-    const isCurrentMonth = ym === TIMESTORE.currentMonth();
-    const records = TIMESTORE.getRecords(ym);
-    const summary = TIMESTORE.getMonthSummary(ym);
-    const today   = TIMESTORE.todayStr();
+    const isCurrent = ym === TIMESTORE.currentMonth();
+    const records   = TIMESTORE.getRecords(ym);
+    const summary   = TIMESTORE.getMonthSummary(ym);
+    const today     = TIMESTORE.todayStr();
+    const active    = TIMESTORE.getActive();
+    const houses    = STORE.getHouses();
+    const history   = TIMESTORE.getWorkTypeHistory();
+    const days      = ['日','月','火','水','木','金','土'];
 
+    /* --- 打刻カード --- */
+    let trackerHtml = '';
+    if (!active) {
+      trackerHtml = `
+        <div class="card mb-4" style="border:2px solid #2d6a4f;">
+          <div class="card-body text-center py-4">
+            <p class="text-muted mb-3">作業を始めるときにタップ</p>
+            <button class="btn btn-farm btn-lg px-5 py-3" id="btnStart" style="font-size:1.3rem;">
+              <i class="bi bi-play-circle-fill me-2"></i>作業開始
+            </button>
+          </div>
+        </div>`;
+    } else if (active.state === 'working') {
+      const breakTotal = TIMESTORE.calcBreakMin(active.breaks);
+      const houseCheckboxes = houses.map(h=>`
+        <div class="form-check form-check-inline">
+          <input class="form-check-input active-house" type="checkbox" id="ah_${h.id}" value="${h.id}"
+                 ${(active.houseIds||[]).includes(h.id)?'checked':''}>
+          <label class="form-check-label" for="ah_${h.id}">${h.name}</label>
+        </div>`).join('');
+      trackerHtml = `
+        <div class="card mb-4 border-success border-2">
+          <div class="card-body py-3">
+            <div class="d-flex align-items-center mb-2">
+              <span class="badge bg-success me-2" style="font-size:.9rem;">● 作業中</span>
+              <span class="text-muted small">開始: ${active.date} ${active.startTime}</span>
+              ${breakTotal?`<span class="text-muted small ms-2">（休憩計${breakTotal}分）</span>`:''}
+              <span class="fw-bold text-success ms-auto fs-5" id="liveTimer">—</span>
+            </div>
+            <div class="mb-2">
+              <label class="form-label fw-bold small mb-1">作業の種類（変更可）</label>
+              <input type="text" id="activeWorkType" class="form-control" list="workTypeList"
+                     placeholder="例：農薬散布" value="${active.workType||''}">
+              <datalist id="workTypeList">
+                ${history.map(t=>`<option value="${t}">`).join('')}
+              </datalist>
+            </div>
+            <div class="mb-3">
+              <label class="form-label fw-bold small mb-1">作業したハウス（複数選択可）</label>
+              <div class="d-flex flex-wrap gap-2">${houseCheckboxes||'<span class="text-muted small">ハウスが未登録です</span>'}</div>
+            </div>
+            <div class="d-flex gap-2">
+              <button class="btn btn-warning flex-grow-1" id="btnBreakStart">
+                <i class="bi bi-cup-hot-fill me-1"></i>休憩開始
+              </button>
+              <button class="btn btn-danger flex-grow-1" id="btnEnd">
+                <i class="bi bi-stop-circle-fill me-1"></i>作業終了
+              </button>
+            </div>
+          </div>
+        </div>`;
+    } else {
+      const lastBreak = active.breaks[active.breaks.length-1];
+      trackerHtml = `
+        <div class="card mb-4 border-warning border-2">
+          <div class="card-body text-center py-4">
+            <div class="badge bg-warning text-dark mb-2" style="font-size:1rem;">☕ 休憩中</div>
+            <div class="text-muted mb-3">休憩開始: ${lastBreak?.start}</div>
+            <button class="btn btn-success btn-lg px-5" id="btnBreakEnd">
+              <i class="bi bi-play-circle-fill me-1"></i>休憩終了・作業再開
+            </button>
+          </div>
+        </div>`;
+    }
+
+    /* --- 月レコード行 --- */
     const rows = records.map(r => {
       const min = TIMESTORE.calcMinutes(r);
+      const brk = TIMESTORE.calcBreakMin(r.breaks||[]);
       const isToday = r.date === today;
+      const houseNames = (r.houseIds||[]).map(id=>{ const h=STORE.getHouse(id); return h?h.name:''; }).filter(Boolean).join('、');
       return `
-      <div class="card mb-2 ${isToday ? 'border-success border-2' : ''}">
+      <div class="card mb-2 ${isToday?'border-success border-2':''}">
         <div class="card-body py-2 px-3">
           <div class="d-flex align-items-center gap-2 flex-wrap">
-            <div class="fw-bold" style="min-width:80px;">
-              ${r.date.slice(5).replace('-','/')}（${['日','月','火','水','木','金','土'][new Date(r.date).getDay()]}）
-              ${isToday ? '<span class="badge bg-success ms-1">今日</span>' : ''}
+            <div class="fw-bold" style="min-width:88px;">
+              ${r.date.slice(5).replace('-','/')}（${days[new Date(r.date).getDay()]}）
+              ${isToday?'<span class="badge bg-success ms-1">今日</span>':''}
             </div>
-            <div class="text-muted small">
-              ${r.startTime||'―'} ～ ${r.endTime||'―'}
-              ${r.breakMinutes ? `（休憩${r.breakMinutes}分）` : ''}
-            </div>
+            <div class="text-muted small">${r.startTime||'―'} ～ ${r.endTime||'―'}${brk?` 休憩${brk}分`:''}</div>
+            ${r.workType?`<span class="badge bg-light text-dark border">${r.workType}</span>`:''}
             <span class="ms-auto fw-bold text-success">${TIMESTORE.fmtMin(min)}</span>
-            <a href="#/time/${r.id}/edit" class="btn btn-sm btn-outline-secondary">
-              <i class="bi bi-pencil"></i>
-            </a>
+            <a href="#/time/${r.id}/edit" class="btn btn-sm btn-outline-secondary"><i class="bi bi-pencil"></i></a>
           </div>
-          ${r.workContent ? `<div class="text-muted small mt-1 text-truncate">${r.workContent}</div>` : ''}
+          ${houseNames?`<div class="text-muted small mt-1"><i class="bi bi-geo-alt me-1"></i>${houseNames}</div>`:''}
+          ${r.workContent?`<div class="text-muted small text-truncate">${r.workContent}</div>`:''}
         </div>
       </div>`;
     }).join('');
@@ -970,57 +1141,131 @@ Object.assign(VIEWS, {
       <div class="d-flex align-items-center mb-3 gap-2 flex-wrap">
         <h2 class="fw-bold mb-0"><i class="bi bi-clock-history me-2 text-success"></i>作業時間管理</h2>
         <a href="#/time/monthly" class="btn btn-farm-outline ms-auto">
-          <i class="bi bi-bar-chart me-1"></i>月別集計
+          <i class="bi bi-bar-chart me-1"></i>集計
         </a>
       </div>
 
-      <!-- 今日の記録ボタン -->
-      <a href="#/time/new" class="btn btn-farm btn-lg w-100 mb-4 py-3" style="font-size:1.2rem;">
-        <i class="bi bi-plus-circle-fill me-2"></i>今日の作業を記録する
-      </a>
+      ${trackerHtml}
 
       <!-- 月ナビ -->
       <div class="d-flex align-items-center justify-content-between mb-3">
-        <a href="#/time/${prevYm}" class="btn btn-farm-outline">
+        <a href="#/time/${prevYm}" class="btn btn-farm-outline btn-sm">
           <i class="bi bi-chevron-left me-1"></i>${prevYm.replace('-','年')}月
         </a>
-        <h4 class="mb-0 fw-bold">${y}年 ${m}月</h4>
-        ${isCurrentMonth
-          ? '<span class="btn btn-outline-secondary disabled">今月</span>'
-          : `<a href="#/time/${nextYm}" class="btn btn-farm-outline">${nextYm.replace('-','年')}月<i class="bi bi-chevron-right ms-1"></i></a>`
-        }
+        <h5 class="mb-0 fw-bold">${y}年 ${m}月</h5>
+        ${isCurrent
+          ? '<span class="btn btn-sm btn-outline-secondary disabled">今月</span>'
+          : `<a href="#/time/${nextYm}" class="btn btn-farm-outline btn-sm">${nextYm.replace('-','年')}月<i class="bi bi-chevron-right ms-1"></i></a>`}
       </div>
 
       <!-- 月集計バナー -->
       <div class="card mb-3" style="background:linear-gradient(135deg,#2d6a4f,#40916c);color:#fff;">
-        <div class="card-body py-3 d-flex gap-4 align-items-center">
-          <div class="text-center">
-            <div style="font-size:.8rem;opacity:.8;">稼働日数</div>
-            <div class="fw-bold fs-4">${summary.workDays}日</div>
-          </div>
-          <div class="text-center">
-            <div style="font-size:.8rem;opacity:.8;">合計作業時間</div>
-            <div class="fw-bold fs-4">${TIMESTORE.fmtMin(summary.totalMinutes)}</div>
-          </div>
+        <div class="card-body py-3 d-flex gap-4 align-items-center flex-wrap">
+          <div class="text-center"><div style="font-size:.8rem;opacity:.8;">稼働日数</div><div class="fw-bold fs-4">${summary.workDays}日</div></div>
+          <div class="text-center"><div style="font-size:.8rem;opacity:.8;">合計作業時間</div><div class="fw-bold fs-4">${TIMESTORE.fmtMin(summary.totalMinutes)}</div></div>
           <button class="btn btn-light ms-auto" id="exportMonth">
             <i class="bi bi-file-earmark-excel-fill me-1 text-success"></i>エクセル出力
           </button>
         </div>
       </div>
 
-      <!-- レコード一覧 -->
+      <!-- レコード -->
       ${records.length ? rows : '<p class="text-muted text-center py-4"><i class="bi bi-calendar-x display-6 d-block mb-2"></i>この月の記録はまだありません</p>'}
-    `);
+
+      <!-- 手動追加 -->
+      <div class="text-center mt-3">
+        <a href="#/time/new" class="btn btn-farm-outline btn-sm">
+          <i class="bi bi-plus me-1"></i>手動で記録を追加
+        </a>
+      </div>`);
 
     $('#exportMonth').onclick = () => exportRecordsExcel(ym);
+
+    if (!active) {
+      $('#btnStart').onclick = () => {
+        TIMESTORE.startWork();
+        flash('作業を開始しました');
+        VIEWS.timeList(ym);
+      };
+    } else if (active.state === 'working') {
+      // ライブタイマー
+      function updateTimer() {
+        const el = document.getElementById('liveTimer');
+        if (!el) return;
+        const now = new Date();
+        const [sh,sm] = active.startTime.split(':').map(Number);
+        const brk = TIMESTORE.calcBreakMin(active.breaks);
+        const elapsed = Math.max(0, (now.getHours()*60+now.getMinutes())-(sh*60+sm)-brk);
+        el.textContent = TIMESTORE.fmtMin(elapsed);
+      }
+      updateTimer();
+      const tid = setInterval(updateTimer, 30000);
+      window._timerCleanup = () => clearInterval(tid);
+
+      // 種類・ハウス変更を即座に保存
+      document.getElementById('activeWorkType').addEventListener('change', e => {
+        TIMESTORE.updateActive({ workType: e.target.value });
+      });
+      document.querySelectorAll('.active-house').forEach(cb => {
+        cb.addEventListener('change', () => {
+          const ids = [...document.querySelectorAll('.active-house:checked')].map(x=>+x.value);
+          TIMESTORE.updateActive({ houseIds: ids });
+        });
+      });
+
+      $('#btnBreakStart').onclick = () => {
+        if (typeof window._timerCleanup === 'function') window._timerCleanup();
+        // 変更を保存してから休憩開始
+        const wt = document.getElementById('activeWorkType').value;
+        const ids = [...document.querySelectorAll('.active-house:checked')].map(x=>+x.value);
+        TIMESTORE.updateActive({ workType:wt, houseIds:ids });
+        TIMESTORE.startBreak();
+        flash('休憩を開始しました','warning');
+        VIEWS.timeList(ym);
+      };
+      $('#btnEnd').onclick = () => {
+        if (typeof window._timerCleanup === 'function') window._timerCleanup();
+        const wt = document.getElementById('activeWorkType').value;
+        const ids = [...document.querySelectorAll('.active-house:checked')].map(x=>+x.value);
+        TIMESTORE.updateActive({ workType:wt, houseIds:ids });
+        const rec = TIMESTORE.endWork();
+        flash('作業を終了しました。詳細を記入できます。');
+        location.hash = `#/time/${rec.id}/edit`;
+      };
+    } else {
+      $('#btnBreakEnd').onclick = () => {
+        TIMESTORE.endBreak();
+        flash('休憩を終了しました');
+        VIEWS.timeList(ym);
+      };
+    }
   },
 
   /* ── 記録フォーム（新規・編集） ── */
   timeForm(id) {
     const isEdit = id !== undefined;
-    const r = isEdit ? TIMESTORE.getRecord(+id) : null;
-    const today = TIMESTORE.todayStr();
-    const nowT  = TIMESTORE.nowTime();
+    const r      = isEdit ? TIMESTORE.getRecord(+id) : null;
+    const today  = TIMESTORE.todayStr();
+    const houses = STORE.getHouses();
+    const history= TIMESTORE.getWorkTypeHistory();
+
+    const houseChecks = houses.map(h=>`
+      <div class="form-check">
+        <input class="form-check-input" type="checkbox" name="houseIds" id="h_${h.id}" value="${h.id}"
+               ${(r?.houseIds||[]).includes(h.id)?'checked':''}>
+        <label class="form-check-label fw-bold" for="h_${h.id}">${h.name}</label>
+      </div>`).join('');
+
+    // 休憩リストHTML（編集時）
+    const breaksVal = r?.breaks || [];
+    const breaksHtml = breaksVal.map((b,i)=>`
+      <div class="d-flex gap-2 align-items-center mb-1 break-row" data-i="${i}">
+        <span class="text-muted small" style="min-width:40px;">休憩${i+1}</span>
+        <input type="time" class="form-control form-control-sm break-start" value="${b.start||''}" style="width:110px;">
+        <span class="text-muted">〜</span>
+        <input type="time" class="form-control form-control-sm break-end" value="${b.end||''}" style="width:110px;">
+        <button type="button" class="btn btn-sm btn-outline-danger del-break"><i class="bi bi-x"></i></button>
+      </div>`).join('');
 
     this.render(`
       <div class="mb-3">
@@ -1029,8 +1274,8 @@ Object.assign(VIEWS, {
       <div class="card">
         <div class="card-header py-3">
           <h4 class="mb-0">
-            <i class="bi bi-${isEdit ? 'pencil' : 'plus-circle'}-fill me-2"></i>
-            ${isEdit ? '記録を編集' : '作業を記録する'}
+            <i class="bi bi-${isEdit?'pencil':'plus-circle'}-fill me-2"></i>
+            ${isEdit?'記録を編集':'作業記録を手動追加'}
           </h4>
         </div>
         <div class="card-body p-4">
@@ -1038,70 +1283,79 @@ Object.assign(VIEWS, {
 
             <div class="mb-4">
               <label class="form-label fw-bold fs-5">日付</label>
-              <input type="date" name="date" class="form-control form-control-lg"
-                     value="${r?.date || today}" required>
+              <input type="date" name="date" class="form-control form-control-lg" value="${r?.date||today}" required>
             </div>
 
-            <!-- 開始時間 -->
-            <div class="mb-4">
-              <label class="form-label fw-bold fs-5">開始時間</label>
-              <div class="d-flex gap-2 align-items-center">
-                <input type="time" name="startTime" id="startTime" class="form-control form-control-lg"
-                       value="${r?.startTime || ''}">
-                <button type="button" class="btn btn-farm px-4" id="setStart" title="今の時刻をセット">
-                  <i class="bi bi-clock me-1"></i>今
-                </button>
+            <!-- 開始・終了 -->
+            <div class="row g-3 mb-2">
+              <div class="col-6">
+                <label class="form-label fw-bold">開始時間</label>
+                <div class="d-flex gap-1">
+                  <input type="time" name="startTime" id="startTime" class="form-control form-control-lg" value="${r?.startTime||''}">
+                  <button type="button" class="btn btn-farm px-3" id="setStart"><i class="bi bi-clock"></i></button>
+                </div>
               </div>
-            </div>
-
-            <!-- 終了時間 -->
-            <div class="mb-4">
-              <label class="form-label fw-bold fs-5">終了時間</label>
-              <div class="d-flex gap-2 align-items-center">
-                <input type="time" name="endTime" id="endTime" class="form-control form-control-lg"
-                       value="${r?.endTime || ''}">
-                <button type="button" class="btn btn-farm px-4" id="setEnd" title="今の時刻をセット">
-                  <i class="bi bi-clock me-1"></i>今
-                </button>
+              <div class="col-6">
+                <label class="form-label fw-bold">終了時間</label>
+                <div class="d-flex gap-1">
+                  <input type="time" name="endTime" id="endTime" class="form-control form-control-lg" value="${r?.endTime||''}">
+                  <button type="button" class="btn btn-farm px-3" id="setEnd"><i class="bi bi-clock"></i></button>
+                </div>
               </div>
             </div>
 
             <!-- 休憩 -->
             <div class="mb-4">
-              <label class="form-label fw-bold fs-5">休憩時間（分）</label>
-              <div class="d-flex gap-2 flex-wrap align-items-center">
-                <input type="number" name="breakMinutes" id="breakMin" class="form-control form-control-lg"
-                       style="max-width:120px;" min="0" max="600" value="${r?.breakMinutes ?? 60}">
-                ${[0,30,60,90].map(v=>`
-                  <button type="button" class="btn btn-outline-secondary break-preset" data-val="${v}">${v}分</button>
-                `).join('')}
-              </div>
+              <label class="form-label fw-bold">休憩時間</label>
+              <div id="breakList">${breaksHtml}</div>
+              <button type="button" class="btn btn-outline-secondary btn-sm mt-1" id="addBreak">
+                <i class="bi bi-plus me-1"></i>休憩を追加
+              </button>
             </div>
 
-            <!-- 実働時間プレビュー -->
-            <div class="alert alert-success py-2 mb-4" id="timePreview">
+            <!-- 実働プレビュー -->
+            <div class="alert alert-success py-2 mb-4">
               <i class="bi bi-hourglass-split me-2"></i>実働時間: <strong id="previewVal">―</strong>
             </div>
 
-            <!-- 作業内容 -->
+            <!-- 作業の種類 -->
             <div class="mb-4">
-              <label class="form-label fw-bold fs-5">作業内容</label>
+              <label class="form-label fw-bold fs-5">作業の種類</label>
+              <input type="text" name="workType" id="workTypeInput" class="form-control form-control-lg"
+                     list="workTypeList" placeholder="例：農薬散布（自由入力）" value="${r?.workType||''}">
+              <datalist id="workTypeList">
+                ${history.map(t=>`<option value="${t}">`).join('')}
+              </datalist>
+              <div class="form-text">以前の作業名は候補として表示されます</div>
+            </div>
+
+            <!-- ハウス -->
+            <div class="mb-4">
+              <label class="form-label fw-bold fs-5">作業したハウス（複数選択可）</label>
+              ${houses.length
+                ? `<div class="d-flex flex-wrap gap-3">${houseChecks}</div>`
+                : '<p class="text-muted small">ハウスが未登録です</p>'}
+            </div>
+
+            <!-- 作業内容（任意） -->
+            <div class="mb-4">
+              <label class="form-label fw-bold">作業内容 <span class="text-muted fw-normal small">（後から入力OK）</span></label>
               <textarea name="workContent" class="form-control" rows="3"
-                        placeholder="今日やった作業を書いてください">${r?.workContent || ''}</textarea>
+                        placeholder="今日やった作業">${r?.workContent||''}</textarea>
             </div>
 
-            <!-- 翌日の予定 -->
+            <!-- 翌日の予定（任意） -->
             <div class="mb-4">
-              <label class="form-label fw-bold fs-5">翌日の予定</label>
+              <label class="form-label fw-bold">翌日の予定 <span class="text-muted fw-normal small">（任意）</span></label>
               <textarea name="nextPlan" class="form-control" rows="2"
-                        placeholder="明日やること">${r?.nextPlan || ''}</textarea>
+                        placeholder="明日やること">${r?.nextPlan||''}</textarea>
             </div>
 
-            <!-- その他 -->
+            <!-- その他（任意） -->
             <div class="mb-4">
-              <label class="form-label fw-bold fs-5">その他・気になること</label>
+              <label class="form-label fw-bold">その他・気になること <span class="text-muted fw-normal small">（任意）</span></label>
               <textarea name="notes" class="form-control" rows="2"
-                        placeholder="何かあれば">${r?.notes || ''}</textarea>
+                        placeholder="何かあれば">${r?.notes||''}</textarea>
             </div>
 
             <button type="submit" class="btn btn-farm btn-lg w-100">
@@ -1109,33 +1363,55 @@ Object.assign(VIEWS, {
             </button>
           </form>
 
-          ${isEdit ? `
-          <div class="text-center mt-3">
+          ${isEdit?`<div class="text-center mt-3">
             <button class="btn btn-outline-danger btn-sm" id="delRecord">
               <i class="bi bi-trash me-1"></i>この記録を削除
-            </button>
-          </div>` : ''}
+            </button></div>`:''}
         </div>
       </div>`);
 
-    // 今の時刻ボタン
-    $('#setStart').onclick = () => { document.getElementById('startTime').value = TIMESTORE.nowTime(); updatePreview(); };
-    $('#setEnd').onclick   = () => { document.getElementById('endTime').value   = TIMESTORE.nowTime(); updatePreview(); };
+    // 今の時刻
+    $('#setStart').onclick = () => { document.getElementById('startTime').value=TIMESTORE.nowTime(); updatePreview(); };
+    $('#setEnd').onclick   = () => { document.getElementById('endTime').value=TIMESTORE.nowTime(); updatePreview(); };
 
-    // 休憩プリセット
-    document.querySelectorAll('.break-preset').forEach(btn => {
-      btn.onclick = () => { document.getElementById('breakMin').value = btn.dataset.val; updatePreview(); };
+    // 休憩追加
+    $('#addBreak').onclick = () => {
+      const div = document.createElement('div');
+      const i   = document.querySelectorAll('.break-row').length;
+      div.className = 'break-row d-flex gap-2 align-items-center mb-1';
+      div.innerHTML = `<span class="text-muted small" style="min-width:40px;">休憩${i+1}</span>
+        <input type="time" class="form-control form-control-sm break-start" style="width:110px;">
+        <span class="text-muted">〜</span>
+        <input type="time" class="form-control form-control-sm break-end" style="width:110px;">
+        <button type="button" class="btn btn-sm btn-outline-danger del-break"><i class="bi bi-x"></i></button>`;
+      document.getElementById('breakList').appendChild(div);
+      div.querySelector('.break-start').addEventListener('input', updatePreview);
+      div.querySelector('.break-end').addEventListener('input', updatePreview);
+      div.querySelector('.del-break').onclick = () => { div.remove(); updatePreview(); };
+    };
+
+    // 既存の削除ボタン
+    document.querySelectorAll('.del-break').forEach(btn => {
+      btn.onclick = () => { btn.closest('.break-row').remove(); updatePreview(); };
+    });
+    document.querySelectorAll('.break-start,.break-end').forEach(el => {
+      el.addEventListener('input', updatePreview);
     });
 
-    // リアルタイム実働プレビュー
+    // 実働プレビュー
+    function getBreaks() {
+      return [...document.querySelectorAll('.break-row')].map(row => ({
+        start: row.querySelector('.break-start').value,
+        end:   row.querySelector('.break-end').value
+      }));
+    }
     function updatePreview() {
-      const s = document.getElementById('startTime').value;
-      const e = document.getElementById('endTime').value;
-      const b = +document.getElementById('breakMin').value || 0;
+      const s=document.getElementById('startTime').value;
+      const e=document.getElementById('endTime').value;
       if (s && e) {
-        const [sh,sm] = s.split(':').map(Number);
-        const [eh,em] = e.split(':').map(Number);
-        const min = Math.max(0, (eh*60+em)-(sh*60+sm)-b);
+        const [sh,sm]=s.split(':').map(Number), [eh,em]=e.split(':').map(Number);
+        const brk = TIMESTORE.calcBreakMin(getBreaks());
+        const min = Math.max(0,(eh*60+em)-(sh*60+sm)-brk);
         document.getElementById('previewVal').textContent = TIMESTORE.fmtMin(min);
       } else {
         document.getElementById('previewVal').textContent = '―';
@@ -1143,23 +1419,25 @@ Object.assign(VIEWS, {
     }
     document.getElementById('startTime').addEventListener('input', updatePreview);
     document.getElementById('endTime').addEventListener('input', updatePreview);
-    document.getElementById('breakMin').addEventListener('input', updatePreview);
     updatePreview();
 
     // 保存
     $('#timeForm').addEventListener('submit', e => {
       e.preventDefault();
       const f = new FormData(e.target);
+      const houseIds = [...document.querySelectorAll('input[name="houseIds"]:checked')].map(x=>+x.value);
       const rec = {
-        date:         f.get('date'),
-        startTime:    f.get('startTime'),
-        endTime:      f.get('endTime'),
-        breakMinutes: +f.get('breakMinutes') || 0,
-        workContent:  f.get('workContent'),
-        nextPlan:     f.get('nextPlan'),
-        notes:        f.get('notes')
+        date:        f.get('date'),
+        startTime:   f.get('startTime'),
+        endTime:     f.get('endTime'),
+        breaks:      getBreaks(),
+        workType:    f.get('workType'),
+        houseIds,
+        workContent: f.get('workContent'),
+        nextPlan:    f.get('nextPlan'),
+        notes:       f.get('notes')
       };
-      if (isEdit) { TIMESTORE.updateRecord({...r, ...rec}); flash('更新しました'); }
+      if (isEdit) { TIMESTORE.updateRecord({...r,...rec}); flash('更新しました'); }
       else        { TIMESTORE.addRecord(rec); flash('記録しました'); }
       location.hash = `#/time/${rec.date.slice(0,7)}`;
     });
@@ -1174,64 +1452,92 @@ Object.assign(VIEWS, {
     }
   },
 
-  /* ── 月別集計一覧 ── */
+  /* ── 集計ページ（月別 + 種類別 + ハウス別） ── */
   timeMonthly() {
-    const totals = TIMESTORE.getMonthlyTotals();
-    const cur    = TIMESTORE.currentMonth();
-    const curSum = TIMESTORE.getMonthSummary(cur);
+    const totals  = TIMESTORE.getMonthlyTotals();
+    const cur     = TIMESTORE.currentMonth();
+    const curSum  = TIMESTORE.getMonthSummary(cur);
+    const allMonths = [{ month:cur,...curSum }, ...totals.filter(t=>t.month!==cur)];
+    const seen    = new Set();
+    const months  = allMonths.filter(r=>{ if(seen.has(r.month)) return false; seen.add(r.month); return true; });
 
-    // 現在月を先頭に表示（重複しないよう除外してマージ）
-    const rows = [{ month: cur, ...curSum }, ...totals.filter(t => t.month !== cur)];
+    const byType  = TIMESTORE.getAllTimeByWorkType();
+    const byHouse = TIMESTORE.getAllTimeByHouse();
+    const houses  = STORE.getHouses();
 
-    const tableRows = rows.map(t => `
+    const monthRows = months.map(t=>`
       <tr>
         <td class="fw-bold">
-          <a href="#/time/${t.month}" class="text-decoration-none">
-            ${t.month.replace('-','年')}月
-          </a>
-          ${t.month === cur ? '<span class="badge bg-success ms-1">今月</span>' : ''}
+          <a href="#/time/${t.month}" class="text-decoration-none">${t.month.replace('-','年')}月</a>
+          ${t.month===cur?'<span class="badge bg-success ms-1">今月</span>':''}
         </td>
         <td class="text-center">${t.workDays}日</td>
         <td class="text-end fw-bold text-success">${TIMESTORE.fmtMin(t.totalMinutes)}</td>
       </tr>`).join('');
 
+    const typeRows = Object.entries(byType).sort((a,b)=>b[1]-a[1]).map(([t,m])=>`
+      <tr><td>${t}</td><td class="text-end fw-bold text-success">${TIMESTORE.fmtMin(m)}</td></tr>`).join('');
+
+    const houseRows = houses.map(h=>{
+      const min = byHouse[h.id] || 0;
+      return `<tr><td class="fw-bold"><a href="#/house/${h.id}" class="text-decoration-none">${h.name}</a></td>
+        <td class="text-end fw-bold text-success">${min ? TIMESTORE.fmtMin(min) : '―'}</td></tr>`;
+    }).join('');
+
     this.render(`
-      <div class="d-flex align-items-center mb-3 gap-2">
-        <a href="#/time" class="btn btn-farm-outline"><i class="bi bi-arrow-left me-1"></i>月別一覧</a>
-        <h2 class="fw-bold mb-0 ms-1">
-          <i class="bi bi-bar-chart-fill me-2 text-success"></i>月別集計
-        </h2>
-        <button class="btn btn-farm ms-auto" id="exportAll">
-          <i class="bi bi-file-earmark-excel-fill me-1"></i>全期間をエクセル出力
-        </button>
+      <div class="d-flex align-items-center mb-3 gap-2 flex-wrap">
+        <a href="#/time" class="btn btn-farm-outline"><i class="bi bi-arrow-left me-1"></i>一覧</a>
+        <h2 class="fw-bold mb-0 ms-1"><i class="bi bi-bar-chart-fill me-2 text-success"></i>集計</h2>
+        <div class="ms-auto d-flex gap-2 flex-wrap">
+          <button class="btn btn-farm btn-sm" id="exportAll">
+            <i class="bi bi-file-earmark-excel-fill me-1"></i>月別エクセル
+          </button>
+          <button class="btn btn-farm btn-sm" id="exportByType">
+            <i class="bi bi-file-earmark-excel-fill me-1"></i>種類別エクセル
+          </button>
+        </div>
       </div>
 
-      <div class="card">
-        <div class="card-header py-2">
-          <i class="bi bi-table me-2"></i>月ごとの合計作業時間
-        </div>
+      <!-- 月別 -->
+      <div class="card mb-4">
+        <div class="card-header py-2"><i class="bi bi-calendar3 me-2"></i>月別 合計時間</div>
         <div class="card-body p-0">
           <table class="table table-hover mb-0">
-            <thead class="table-light">
-              <tr>
-                <th>年月</th>
-                <th class="text-center">稼働日数</th>
-                <th class="text-end">合計作業時間</th>
-              </tr>
-            </thead>
-            <tbody>
-              ${tableRows || '<tr><td colspan="3" class="text-center text-muted py-4">データがありません</td></tr>'}
-            </tbody>
+            <thead class="table-light"><tr><th>年月</th><th class="text-center">稼働日数</th><th class="text-end">合計時間</th></tr></thead>
+            <tbody>${monthRows||'<tr><td colspan="3" class="text-center text-muted py-3">データなし</td></tr>'}</tbody>
           </table>
         </div>
       </div>
 
-      <p class="text-muted small mt-3">
+      <!-- 作業種類別 -->
+      <div class="card mb-4">
+        <div class="card-header py-2"><i class="bi bi-tag me-2"></i>作業の種類別 合計時間（直近2ヶ月）</div>
+        <div class="card-body p-0">
+          <table class="table table-hover mb-0">
+            <thead class="table-light"><tr><th>作業の種類</th><th class="text-end">合計時間</th></tr></thead>
+            <tbody>${typeRows||'<tr><td colspan="2" class="text-center text-muted py-3">データなし</td></tr>'}</tbody>
+          </table>
+        </div>
+      </div>
+
+      <!-- ハウス別 -->
+      <div class="card mb-4">
+        <div class="card-header py-2"><i class="bi bi-tree me-2"></i>ハウス別 作業時間（直近2ヶ月）</div>
+        <div class="card-body p-0">
+          <table class="table table-hover mb-0">
+            <thead class="table-light"><tr><th>ハウス</th><th class="text-end">合計時間</th></tr></thead>
+            <tbody>${houseRows||'<tr><td colspan="2" class="text-center text-muted py-3">データなし</td></tr>'}</tbody>
+          </table>
+        </div>
+      </div>
+
+      <p class="text-muted small">
         <i class="bi bi-info-circle me-1"></i>
-        詳細レコードは直近2ヶ月分を保持。それ以前は月別集計としてこの画面に記録されます。
+        種類別・ハウス別は直近2ヶ月の詳細データから集計。月別合計は全期間保持。
       </p>`);
 
-    $('#exportAll').onclick = () => exportMonthlyExcel();
+    $('#exportAll').onclick    = () => exportMonthlyExcel();
+    $('#exportByType').onclick = () => exportWorkTypeExcel();
   }
 });
 
@@ -1239,6 +1545,11 @@ Object.assign(VIEWS, {
 /* =====================================================================
    ROUTING 設定 & 起動
    ===================================================================== */
+// ページ遷移時にタイマーをクリア
+window.addEventListener('hashchange', () => {
+  if (typeof window._timerCleanup === 'function') { window._timerCleanup(); window._timerCleanup = null; }
+});
+
 ROUTER.add(/^$/, ()=>VIEWS.houseList());
 ROUTER.add(/^house\/new$/, ()=>VIEWS.houseForm(null));
 ROUTER.add(/^house\/(\d+)$/, id=>VIEWS.houseDetail(id));
