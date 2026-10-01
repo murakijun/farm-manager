@@ -337,15 +337,16 @@ const VIEWS = {
     id = +id;
     const h = STORE.getHouse(id);
     if (!h) { flash('ハウスが見つかりません','danger'); location.hash='#/'; return; }
-    const trees = STORE.getTrees(id);
-    const tmap = {};
+    const trees  = STORE.getTrees(id);
+    const tmap   = {};
     trees.forEach(t=>tmap[`${t.row}-${t.col}`]=t);
-    const works = STORE.getWorks(id).slice().reverse().slice(0,5);
+    const works  = STORE.getWorks(id).slice().reverse().slice(0,5);
+    const active = TIMESTORE.getActiveHouseSession();
+    const stats  = TIMESTORE.getHouseStats(id);
+    const history= TIMESTORE.getWorkTypeHistory();
 
-    let gridRows='';
-    let colHeads='<th class="row-label"></th>';
+    let gridRows='', colHeads='<th class="row-label"></th>';
     for(let c=1;c<=h.cols;c++) colHeads+=`<th style="width:56px;text-align:center;font-size:.7rem;color:#6c757d;padding-bottom:4px;">${c}</th>`;
-
     for(let r=1;r<=h.rows;r++){
       let cells='';
       for(let c=1;c<=h.cols;c++){
@@ -368,16 +369,94 @@ const VIEWS = {
       </a>`).join('')
     : '<p class="text-muted text-center py-3 mb-0">作業記録はまだありません</p>';
 
+    /* ── 打刻カード ── */
+    let trackCard = '';
+    if (!active) {
+      // 未開始
+      trackCard = `
+        <div class="card mb-4" style="border:2px solid #2d6a4f;">
+          <div class="card-body p-3">
+            <div class="fw-bold mb-2"><i class="bi bi-play-circle me-2 text-success"></i>このハウスで作業を開始する</div>
+            <div class="d-flex gap-2 mb-3">
+              <input type="text" id="startWorkType" class="form-control form-control-lg"
+                     list="wthList" placeholder="作業の種類（例：農薬散布）">
+              <datalist id="wthList">${history.map(t=>`<option value="${t}">`).join('')}</datalist>
+            </div>
+            <button class="btn btn-farm btn-lg w-100 py-3" id="btnHouseStart" style="font-size:1.2rem;">
+              <i class="bi bi-play-fill me-2"></i>作業開始
+            </button>
+          </div>
+        </div>`;
+    } else if (active.houseId === id) {
+      // このハウスで作業中
+      const elapsed = Math.max(0,Math.round((Date.now()-active.startTs)/60000));
+      trackCard = `
+        <div class="card mb-4 border-success border-2">
+          <div class="card-body p-3">
+            <div class="d-flex align-items-center mb-2">
+              <span class="badge bg-success me-2" style="font-size:.95rem;">● 作業中</span>
+              <span class="text-muted small">開始: ${active.startTime}</span>
+              <span class="fw-bold text-success ms-auto fs-4" id="houseTimer">${TIMESTORE.fmtMin(elapsed)}</span>
+            </div>
+            <div class="mb-3">
+              <input type="text" id="activeWorkType" class="form-control" list="wthList2"
+                     placeholder="作業の種類" value="${active.workType||''}">
+              <datalist id="wthList2">${history.map(t=>`<option value="${t}">`).join('')}</datalist>
+            </div>
+            <button class="btn btn-danger btn-lg w-100 py-3" id="btnHouseEnd" style="font-size:1.2rem;">
+              <i class="bi bi-stop-fill me-2"></i>作業終了
+            </button>
+          </div>
+        </div>`;
+    } else {
+      // 別ハウスで作業中
+      const otherHouse = STORE.getHouse(active.houseId);
+      trackCard = `
+        <div class="alert alert-warning mb-4 d-flex align-items-center gap-2">
+          <i class="bi bi-exclamation-triangle-fill fs-5"></i>
+          <div>現在「${otherHouse?.name||'別のハウス'}」で作業中です。
+            終了してからこのハウスを開始してください。</div>
+          <a href="#/house/${active.houseId}" class="btn btn-sm btn-warning ms-auto">移動</a>
+        </div>`;
+    }
+
+    /* ── 時間統計カード ── */
+    const typeRows = Object.entries(stats.byWorkType)
+      .sort((a,b)=>b[1]-a[1])
+      .map(([t,m])=>`
+        <div class="d-flex align-items-center py-1 border-bottom">
+          <span class="text-muted small flex-grow-1">${t}</span>
+          <span class="fw-bold text-success">${TIMESTORE.fmtMin(m)}</span>
+        </div>`).join('');
+    const statsCard = `
+      <div class="card mb-4" style="background:linear-gradient(135deg,#2d6a4f,#40916c);color:#fff;">
+        <div class="card-body p-3">
+          <div class="d-flex align-items-center mb-2">
+            <div>
+              <div style="font-size:.8rem;opacity:.8;">このハウスの累計作業時間</div>
+              <div class="fw-bold" style="font-size:2rem;">${stats.total ? TIMESTORE.fmtMin(stats.total) : '―'}</div>
+            </div>
+            <a href="#/house/${id}/time" class="btn btn-light btn-sm ms-auto">
+              <i class="bi bi-clock-history me-1"></i>詳細
+            </a>
+          </div>
+          ${typeRows ? `<div class="bg-white bg-opacity-10 rounded p-2 mt-1">${typeRows}</div>` : ''}
+        </div>
+      </div>`;
+
     this.render(`
       <div class="d-flex align-items-center mb-3 gap-2 flex-wrap">
         <a href="#/" class="btn btn-farm-outline"><i class="bi bi-arrow-left me-1"></i>一覧</a>
         <h2 class="fw-bold mb-0 ms-1"><i class="bi bi-tree-fill me-2 text-success"></i>${h.name}</h2>
         <div class="ms-auto d-flex gap-2">
-          <a href="#/house/${id}/work/new" class="btn btn-warning"><i class="bi bi-clipboard-check me-1"></i>作業を登録</a>
+          <a href="#/house/${id}/work/new" class="btn btn-warning"><i class="bi bi-clipboard-check me-1"></i>作業登録</a>
           <a href="#/house/${id}/edit" class="btn btn-farm-outline"><i class="bi bi-pencil me-1"></i>編集</a>
         </div>
       </div>
       <div class="text-muted small mb-3">${h.rows}列 × ${h.cols}本 = 合計 ${h.rows*h.cols}本${h.notes?' ／ '+h.notes:''}</div>
+
+      ${trackCard}
+      ${statsCard}
 
       <div class="d-flex gap-3 mb-3 flex-wrap align-items-center">
         <span class="fw-bold small">ステータス:</span>
@@ -417,6 +496,36 @@ const VIEWS = {
         </div>
       </div>`);
 
+    // 打刻ボタン
+    if (!active) {
+      $('#btnHouseStart').onclick = () => {
+        const wt = document.getElementById('startWorkType').value.trim();
+        TIMESTORE.startHouseSession(id, wt);
+        flash('作業を開始しました');
+        VIEWS.houseDetail(id);
+      };
+    } else if (active.houseId === id) {
+      // ライブタイマー
+      const tid = setInterval(() => {
+        const el = document.getElementById('houseTimer');
+        if (!el) { clearInterval(tid); return; }
+        el.textContent = TIMESTORE.fmtMin(Math.max(0,Math.round((Date.now()-active.startTs)/60000)));
+      }, 30000);
+      window._timerCleanup = () => clearInterval(tid);
+
+      document.getElementById('activeWorkType').addEventListener('change', e => {
+        TIMESTORE.updateActiveHouseSession({ workType: e.target.value });
+      });
+      $('#btnHouseEnd').onclick = () => {
+        if (typeof window._timerCleanup==='function') window._timerCleanup();
+        const wt = document.getElementById('activeWorkType').value.trim();
+        TIMESTORE.updateActiveHouseSession({ workType: wt });
+        const s = TIMESTORE.endHouseSession();
+        flash(`作業終了 ─ ${TIMESTORE.fmtMin(s.minutes)} お疲れ様でした！`);
+        VIEWS.houseDetail(id);
+      };
+    }
+
     $('#delToggle').onclick = ()=>$('#delConfirm').classList.toggle('d-none');
     $('#delCancel').onclick = ()=>$('#delConfirm').classList.add('d-none');
     $('#delConfirmBtn').onclick = ()=>{
@@ -424,6 +533,89 @@ const VIEWS = {
       flash(`ハウス「${h.name}」を削除しました`);
       location.hash='#/';
     };
+  },
+
+  /* ── ハウス作業時間 詳細ページ ── */
+  houseTime(id) {
+    id = +id;
+    const h = STORE.getHouse(id);
+    if (!h) { location.hash='#/'; return; }
+    const sessions = TIMESTORE.getHouseSessions(id);
+    const stats    = TIMESTORE.getHouseStats(id);
+    const days     = ['日','月','火','水','木','金','土'];
+
+    const typeRows = Object.entries(stats.byWorkType).sort((a,b)=>b[1]-a[1]).map(([t,m])=>`
+      <tr>
+        <td>${t}</td>
+        <td class="text-end fw-bold text-success">${TIMESTORE.fmtMin(m)}</td>
+      </tr>`).join('');
+
+    const sessionRows = sessions.map(s=>`
+      <div class="card mb-2">
+        <div class="card-body py-2 px-3">
+          <div class="d-flex align-items-center gap-2 flex-wrap">
+            <span class="fw-bold" style="min-width:88px;">
+              ${s.date.slice(5).replace('-','/')}（${days[new Date(s.date).getDay()]}）
+            </span>
+            <span class="text-muted small">${s.startTime} ～ ${s.endTime}</span>
+            ${s.workType?`<span class="badge bg-light text-dark border">${s.workType}</span>`:''}
+            <span class="ms-auto fw-bold text-success">${TIMESTORE.fmtMin(s.minutes)}</span>
+            <button class="btn btn-sm btn-outline-danger del-session" data-id="${s.id}">
+              <i class="bi bi-trash"></i>
+            </button>
+          </div>
+        </div>
+      </div>`).join('');
+
+    this.render(`
+      <div class="d-flex align-items-center mb-3 gap-2">
+        <a href="#/house/${id}" class="btn btn-farm-outline"><i class="bi bi-arrow-left me-1"></i>${h.name}</a>
+        <h2 class="fw-bold mb-0 ms-1">
+          <i class="bi bi-clock-history me-2 text-success"></i>作業時間 詳細
+        </h2>
+      </div>
+
+      <!-- 累計バナー -->
+      <div class="card mb-4" style="background:linear-gradient(135deg,#2d6a4f,#40916c);color:#fff;">
+        <div class="card-body py-3 d-flex align-items-center gap-4">
+          <div>
+            <div style="font-size:.8rem;opacity:.8;">${h.name} 累計作業時間</div>
+            <div class="fw-bold" style="font-size:2.2rem;">${stats.total ? TIMESTORE.fmtMin(stats.total) : '―'}</div>
+          </div>
+          <div class="ms-auto text-end">
+            <div style="font-size:.8rem;opacity:.8;">記録回数</div>
+            <div class="fw-bold fs-3">${sessions.length}回</div>
+          </div>
+        </div>
+      </div>
+
+      <!-- 作業種類別 -->
+      <div class="card mb-4">
+        <div class="card-header py-2"><i class="bi bi-tag me-2"></i>作業の種類別 合計時間</div>
+        <div class="card-body p-0">
+          <table class="table table-hover mb-0">
+            <thead class="table-light"><tr><th>作業の種類</th><th class="text-end">合計時間</th></tr></thead>
+            <tbody>${typeRows||'<tr><td colspan="2" class="text-center text-muted py-3">データなし</td></tr>'}</tbody>
+          </table>
+        </div>
+      </div>
+
+      <!-- セッション一覧 -->
+      <div class="card mb-4">
+        <div class="card-header py-2"><i class="bi bi-list-ul me-2"></i>作業履歴</div>
+        <div class="card-body p-3">
+          ${sessions.length ? sessionRows : '<p class="text-muted text-center py-3 mb-0">まだ記録がありません</p>'}
+        </div>
+      </div>`);
+
+    document.querySelectorAll('.del-session').forEach(btn => {
+      btn.onclick = () => {
+        if (!confirm('この記録を削除しますか？')) return;
+        TIMESTORE.deleteHouseSession(+btn.dataset.id);
+        flash('削除しました');
+        VIEWS.houseTime(id);
+      };
+    });
   },
 
   /* ── 木詳細 ── */
@@ -964,12 +1156,61 @@ const TIMESTORE = (() => {
     return result;
   }
 
+  /* --- ハウス別セッション --- */
+  function getHouseSessions(houseId) {
+    return (load().houseSessions||[])
+      .filter(s=>s.houseId===houseId)
+      .sort((a,b)=>b.date.localeCompare(a.date)||b.id-a.id);
+  }
+  function getHouseStats(houseId) {
+    const byWorkType={}, sessions=getHouseSessions(houseId);
+    let total=0;
+    sessions.forEach(s=>{
+      total+=s.minutes||0;
+      const wt=s.workType||'（未設定）';
+      byWorkType[wt]=(byWorkType[wt]||0)+(s.minutes||0);
+    });
+    return {total, byWorkType};
+  }
+  function getActiveHouseSession() { return load().activeHouseSession||null; }
+  function startHouseSession(houseId, workType) {
+    const d=load();
+    d.activeHouseSession={houseId, date:todayStr(), startTime:nowTime(),
+                          startTs:Date.now(), workType:workType||''};
+    save(d); return d.activeHouseSession;
+  }
+  function endHouseSession() {
+    const d=load();
+    if (!d.activeHouseSession) return null;
+    const as=d.activeHouseSession;
+    const minutes=Math.max(1,Math.round((Date.now()-as.startTs)/60000));
+    if (!d.houseSessions)         d.houseSessions=[];
+    if (!d.nextHouseSessionId)    d.nextHouseSessionId=1;
+    const s={id:d.nextHouseSessionId++, houseId:as.houseId, date:as.date,
+             startTime:as.startTime, endTime:nowTime(), minutes, workType:as.workType||''};
+    d.houseSessions.push(s);
+    delete d.activeHouseSession;
+    save(d);
+    if (s.workType) pushWorkType(s.workType);
+    return s;
+  }
+  function updateActiveHouseSession(fields) {
+    const d=load(); if (!d.activeHouseSession) return;
+    Object.assign(d.activeHouseSession,fields); save(d);
+  }
+  function deleteHouseSession(id) {
+    const d=load();
+    d.houseSessions=(d.houseSessions||[]).filter(s=>s.id!==id); save(d);
+  }
+
   return { init, calcBreakMin, calcMinutes, fmtMin, todayStr, nowTime, currentMonth,
            getWorkTypeHistory, pushWorkType,
            getActive, startWork, startBreak, endBreak, endWork, updateActive, clearActive,
            getRecords, getRecord, addRecord, updateRecord, deleteRecord,
            getMonthlyTotals, getMonthSummary,
-           getTimeByHouseId, getTimeByWorkType, getAllTimeByHouse, getAllTimeByWorkType };
+           getTimeByHouseId, getTimeByWorkType, getAllTimeByHouse, getAllTimeByWorkType,
+           getHouseSessions, getHouseStats, getActiveHouseSession,
+           startHouseSession, endHouseSession, updateActiveHouseSession, deleteHouseSession };
 })();
 
 
@@ -1557,6 +1798,7 @@ ROUTER.add(/^house\/(\d+)\/edit$/, id=>VIEWS.houseForm(id));
 ROUTER.add(/^tree\/(\d+)$/, id=>VIEWS.treeDetail(id));
 ROUTER.add(/^house\/(\d+)\/work\/new$/, hid=>VIEWS.workForm(hid));
 ROUTER.add(/^house\/(\d+)\/work\/(\d+)$/, (hid,wid)=>VIEWS.workDetail(hid,wid));
+ROUTER.add(/^house\/(\d+)\/time$/, id=>VIEWS.houseTime(id));
 ROUTER.add(/^time$/, ()=>VIEWS.timeList());
 ROUTER.add(/^time\/new$/, ()=>VIEWS.timeForm());
 ROUTER.add(/^time\/monthly$/, ()=>VIEWS.timeMonthly());
