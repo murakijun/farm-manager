@@ -1162,6 +1162,16 @@ const TIMESTORE = (() => {
       .filter(s=>s.houseId===houseId)
       .sort((a,b)=>b.date.localeCompare(a.date)||b.id-a.id);
   }
+  function getSessionsByMonth(ym) {
+    return (load().houseSessions||[])
+      .filter(s=>s.date.startsWith(ym))
+      .sort((a,b)=>b.date.localeCompare(a.date)||b.id-a.id);
+  }
+  function getSessionsByDate(date) {
+    return (load().houseSessions||[])
+      .filter(s=>s.date===date)
+      .sort((a,b)=>a.startTime.localeCompare(b.startTime));
+  }
   function getHouseStats(houseId) {
     const byWorkType={}, sessions=getHouseSessions(houseId);
     let total=0;
@@ -1202,6 +1212,9 @@ const TIMESTORE = (() => {
     const d=load();
     d.houseSessions=(d.houseSessions||[]).filter(s=>s.id!==id); save(d);
   }
+  function getAllHouseSessions() {
+    return (load().houseSessions||[]).sort((a,b)=>b.date.localeCompare(a.date)||b.id-a.id);
+  }
 
   return { init, calcBreakMin, calcMinutes, fmtMin, todayStr, nowTime, currentMonth,
            getWorkTypeHistory, pushWorkType,
@@ -1209,8 +1222,10 @@ const TIMESTORE = (() => {
            getRecords, getRecord, addRecord, updateRecord, deleteRecord,
            getMonthlyTotals, getMonthSummary,
            getTimeByHouseId, getTimeByWorkType, getAllTimeByHouse, getAllTimeByWorkType,
-           getHouseSessions, getHouseStats, getActiveHouseSession,
-           startHouseSession, endHouseSession, updateActiveHouseSession, deleteHouseSession };
+           getHouseSessions, getSessionsByMonth, getSessionsByDate, getHouseStats,
+           getAllHouseSessions,
+           getActiveHouseSession, startHouseSession, endHouseSession,
+           updateActiveHouseSession, deleteHouseSession };
 })();
 
 
@@ -1255,6 +1270,34 @@ function exportMonthlyExcel() {
   XLSX.writeFile(wb, `月別作業時間集計.xlsx`);
 }
 
+function exportHouseSessionsExcel(ym) {
+  const sessions = TIMESTORE.getSessionsByMonth(ym);
+  const days = ['日','月','火','水','木','金','土'];
+  const rows = [['日付','曜日','ハウス','作業の種類','開始','終了','時間（分）','実働時間']];
+  // 日付ごとにグループ化して出力
+  const byDate = {};
+  sessions.forEach(s=>{ if(!byDate[s.date]) byDate[s.date]=[]; byDate[s.date].push(s); });
+  Object.keys(byDate).sort().reverse().forEach(date=>{
+    const daySessions = byDate[date];
+    daySessions.forEach(s=>{
+      const h = STORE.getHouse(s.houseId);
+      rows.push([date, days[new Date(date).getDay()], h?h.name:'',
+                 s.workType||'', s.startTime||'', s.endTime||'',
+                 s.minutes||0, TIMESTORE.fmtMin(s.minutes)]);
+    });
+    const dayTotal = daySessions.reduce((sum,s)=>sum+(s.minutes||0),0);
+    rows.push(['','','','','','合計', dayTotal, TIMESTORE.fmtMin(dayTotal)]);
+  });
+  const total = sessions.reduce((sum,s)=>sum+(s.minutes||0),0);
+  rows.push(['月合計','','','','','', total, TIMESTORE.fmtMin(total)]);
+
+  const ws = XLSX.utils.aoa_to_sheet(rows);
+  ws['!cols'] = [10,5,12,14,7,7,10,10].map(w=>({wch:w}));
+  const wb = XLSX.utils.book_new();
+  XLSX.utils.book_append_sheet(wb, ws, ym);
+  XLSX.writeFile(wb, `ハウス作業時間_${ym}.xlsx`);
+}
+
 function exportWorkTypeExcel() {
   const byType = TIMESTORE.getAllTimeByWorkType();
   const rows = [['作業の種類','合計時間'],
@@ -1273,109 +1316,79 @@ function exportWorkTypeExcel() {
    ===================================================================== */
 Object.assign(VIEWS, {
 
-  /* ── 時間管理トップ（打刻＋月別一覧） ── */
+  /* ── 時間管理トップ（ハウスセッション日別集計） ── */
   timeList(ym) {
     if (!ym) ym = TIMESTORE.currentMonth();
     const [y, m] = ym.split('-').map(Number);
-    const prevYm = new Date(y, m-2, 1).toISOString().slice(0,7);
-    const nextYm = new Date(y, m,   1).toISOString().slice(0,7);
-    const isCurrent = ym === TIMESTORE.currentMonth();
-    const records   = TIMESTORE.getRecords(ym);
-    const summary   = TIMESTORE.getMonthSummary(ym);
-    const today     = TIMESTORE.todayStr();
-    const active    = TIMESTORE.getActive();
-    const houses    = STORE.getHouses();
-    const history   = TIMESTORE.getWorkTypeHistory();
-    const days      = ['日','月','火','水','木','金','土'];
+    const prevYm   = new Date(y, m-2, 1).toISOString().slice(0,7);
+    const nextYm   = new Date(y, m,   1).toISOString().slice(0,7);
+    const isCurrent= ym === TIMESTORE.currentMonth();
+    const today    = TIMESTORE.todayStr();
+    const days     = ['日','月','火','水','木','金','土'];
+    const active   = TIMESTORE.getActiveHouseSession();
 
-    /* --- 打刻カード --- */
-    let trackerHtml = '';
-    if (!active) {
-      trackerHtml = `
-        <div class="card mb-4" style="border:2px solid #2d6a4f;">
-          <div class="card-body text-center py-4">
-            <p class="text-muted mb-3">作業を始めるときにタップ</p>
-            <button class="btn btn-farm btn-lg px-5 py-3" id="btnStart" style="font-size:1.3rem;">
-              <i class="bi bi-play-circle-fill me-2"></i>作業開始
-            </button>
-          </div>
-        </div>`;
-    } else if (active.state === 'working') {
-      const breakTotal = TIMESTORE.calcBreakMin(active.breaks);
-      const houseCheckboxes = houses.map(h=>`
-        <div class="form-check form-check-inline">
-          <input class="form-check-input active-house" type="checkbox" id="ah_${h.id}" value="${h.id}"
-                 ${(active.houseIds||[]).includes(h.id)?'checked':''}>
-          <label class="form-check-label" for="ah_${h.id}">${h.name}</label>
-        </div>`).join('');
-      trackerHtml = `
+    // ハウスセッションを日付でグループ化
+    const sessions = TIMESTORE.getSessionsByMonth(ym);
+    const byDate   = {};
+    sessions.forEach(s=>{ if(!byDate[s.date]) byDate[s.date]=[]; byDate[s.date].push(s); });
+    const sortedDates = Object.keys(byDate).sort().reverse();
+    const monthTotal  = sessions.reduce((sum,s)=>sum+(s.minutes||0),0);
+    const workDays    = sortedDates.length;
+
+    /* --- 進行中のセッション表示 --- */
+    let activeCard = '';
+    if (active) {
+      const elapsedMin = Math.max(0, Math.round((Date.now()-active.startTs)/60000));
+      const h = STORE.getHouse(active.houseId);
+      activeCard = `
         <div class="card mb-4 border-success border-2">
           <div class="card-body py-3">
-            <div class="d-flex align-items-center mb-2">
-              <span class="badge bg-success me-2" style="font-size:.9rem;">● 作業中</span>
-              <span class="text-muted small">開始: ${active.date} ${active.startTime}</span>
-              ${breakTotal?`<span class="text-muted small ms-2">（休憩計${breakTotal}分）</span>`:''}
-              <span class="fw-bold text-success ms-auto fs-5" id="liveTimer">—</span>
+            <div class="d-flex align-items-center gap-2 mb-1">
+              <span class="badge bg-success" style="font-size:.9rem;">● 作業中</span>
+              <span class="fw-bold">${h?.name||'?'}</span>
+              <span class="text-muted small">${active.workType||''}</span>
+              <span class="text-muted small ms-1">${active.startTime}〜</span>
+              <span class="fw-bold text-success ms-auto fs-5" id="topTimer">${TIMESTORE.fmtMin(elapsedMin)}</span>
             </div>
-            <div class="mb-2">
-              <label class="form-label fw-bold small mb-1">作業の種類（変更可）</label>
-              <input type="text" id="activeWorkType" class="form-control" list="workTypeList"
-                     placeholder="例：農薬散布" value="${active.workType||''}">
-              <datalist id="workTypeList">
-                ${history.map(t=>`<option value="${t}">`).join('')}
-              </datalist>
-            </div>
-            <div class="mb-3">
-              <label class="form-label fw-bold small mb-1">作業したハウス（複数選択可）</label>
-              <div class="d-flex flex-wrap gap-2">${houseCheckboxes||'<span class="text-muted small">ハウスが未登録です</span>'}</div>
-            </div>
-            <div class="d-flex gap-2">
-              <button class="btn btn-warning flex-grow-1" id="btnBreakStart">
-                <i class="bi bi-cup-hot-fill me-1"></i>休憩開始
-              </button>
-              <button class="btn btn-danger flex-grow-1" id="btnEnd">
-                <i class="bi bi-stop-circle-fill me-1"></i>作業終了
-              </button>
-            </div>
-          </div>
-        </div>`;
-    } else {
-      const lastBreak = active.breaks[active.breaks.length-1];
-      trackerHtml = `
-        <div class="card mb-4 border-warning border-2">
-          <div class="card-body text-center py-4">
-            <div class="badge bg-warning text-dark mb-2" style="font-size:1rem;">☕ 休憩中</div>
-            <div class="text-muted mb-3">休憩開始: ${lastBreak?.start}</div>
-            <button class="btn btn-success btn-lg px-5" id="btnBreakEnd">
-              <i class="bi bi-play-circle-fill me-1"></i>休憩終了・作業再開
-            </button>
+            <a href="#/house/${active.houseId}" class="btn btn-sm btn-success w-100 mt-1">
+              <i class="bi bi-arrow-right-circle me-1"></i>${h?.name||''}で作業中 → 終了はハウスページから
+            </a>
           </div>
         </div>`;
     }
 
-    /* --- 月レコード行 --- */
-    const rows = records.map(r => {
-      const min = TIMESTORE.calcMinutes(r);
-      const brk = TIMESTORE.calcBreakMin(r.breaks||[]);
-      const isToday = r.date === today;
-      const houseNames = (r.houseIds||[]).map(id=>{ const h=STORE.getHouse(id); return h?h.name:''; }).filter(Boolean).join('、');
+    /* --- 日別カード --- */
+    const dayCards = sortedDates.map(date => {
+      const list     = byDate[date];
+      const dayTotal = list.reduce((sum,s)=>sum+(s.minutes||0),0);
+      const isToday  = date === today;
+      const dayOfWeek= days[new Date(date).getDay()];
+      const rows     = list.map(s=>{
+        const hName = STORE.getHouse(s.houseId)?.name || '?';
+        return `
+          <div class="d-flex align-items-center gap-2 py-1 border-bottom">
+            <span class="badge bg-light text-dark border" style="min-width:80px;">${hName}</span>
+            ${s.workType?`<span class="text-muted small">${s.workType}</span>`:''}
+            <span class="text-muted small">${s.startTime}〜${s.endTime}</span>
+            <span class="ms-auto fw-bold text-success small">${TIMESTORE.fmtMin(s.minutes)}</span>
+            <a href="#/house/${s.houseId}/time" class="btn btn-sm btn-outline-secondary py-0">
+              <i class="bi bi-list-ul"></i>
+            </a>
+          </div>`;
+      }).join('');
       return `
-      <div class="card mb-2 ${isToday?'border-success border-2':''}">
-        <div class="card-body py-2 px-3">
-          <div class="d-flex align-items-center gap-2 flex-wrap">
-            <div class="fw-bold" style="min-width:88px;">
-              ${r.date.slice(5).replace('-','/')}（${days[new Date(r.date).getDay()]}）
-              ${isToday?'<span class="badge bg-success ms-1">今日</span>':''}
+        <div class="card mb-3 ${isToday?'border-success border-2':''}">
+          <div class="card-body p-3">
+            <div class="d-flex align-items-center mb-2">
+              <span class="fw-bold fs-5">
+                ${date.slice(5).replace('-','/')}（${dayOfWeek}）
+                ${isToday?'<span class="badge bg-success ms-1 fs-6">今日</span>':''}
+              </span>
+              <span class="ms-auto fw-bold text-success fs-4">${TIMESTORE.fmtMin(dayTotal)}</span>
             </div>
-            <div class="text-muted small">${r.startTime||'―'} ～ ${r.endTime||'―'}${brk?` 休憩${brk}分`:''}</div>
-            ${r.workType?`<span class="badge bg-light text-dark border">${r.workType}</span>`:''}
-            <span class="ms-auto fw-bold text-success">${TIMESTORE.fmtMin(min)}</span>
-            <a href="#/time/${r.id}/edit" class="btn btn-sm btn-outline-secondary"><i class="bi bi-pencil"></i></a>
+            ${rows}
           </div>
-          ${houseNames?`<div class="text-muted small mt-1"><i class="bi bi-geo-alt me-1"></i>${houseNames}</div>`:''}
-          ${r.workContent?`<div class="text-muted small text-truncate">${r.workContent}</div>`:''}
-        </div>
-      </div>`;
+        </div>`;
     }).join('');
 
     this.render(`
@@ -1386,7 +1399,7 @@ Object.assign(VIEWS, {
         </a>
       </div>
 
-      ${trackerHtml}
+      ${activeCard}
 
       <!-- 月ナビ -->
       <div class="d-flex align-items-center justify-content-between mb-3">
@@ -1402,83 +1415,40 @@ Object.assign(VIEWS, {
       <!-- 月集計バナー -->
       <div class="card mb-3" style="background:linear-gradient(135deg,#2d6a4f,#40916c);color:#fff;">
         <div class="card-body py-3 d-flex gap-4 align-items-center flex-wrap">
-          <div class="text-center"><div style="font-size:.8rem;opacity:.8;">稼働日数</div><div class="fw-bold fs-4">${summary.workDays}日</div></div>
-          <div class="text-center"><div style="font-size:.8rem;opacity:.8;">合計作業時間</div><div class="fw-bold fs-4">${TIMESTORE.fmtMin(summary.totalMinutes)}</div></div>
+          <div class="text-center">
+            <div style="font-size:.8rem;opacity:.8;">稼働日数</div>
+            <div class="fw-bold fs-3">${workDays}日</div>
+          </div>
+          <div class="text-center">
+            <div style="font-size:.8rem;opacity:.8;">月間 合計作業時間</div>
+            <div class="fw-bold fs-3">${monthTotal ? TIMESTORE.fmtMin(monthTotal) : '―'}</div>
+          </div>
           <button class="btn btn-light ms-auto" id="exportMonth">
             <i class="bi bi-file-earmark-excel-fill me-1 text-success"></i>エクセル出力
           </button>
         </div>
       </div>
 
-      <!-- レコード -->
-      ${records.length ? rows : '<p class="text-muted text-center py-4"><i class="bi bi-calendar-x display-6 d-block mb-2"></i>この月の記録はまだありません</p>'}
+      <!-- 日別カード -->
+      ${sortedDates.length
+        ? dayCards
+        : `<div class="text-center py-5 text-muted">
+             <i class="bi bi-calendar-x display-1 d-block mb-3"></i>
+             この月のハウス作業記録はまだありません<br>
+             <small>各ハウスのページから「作業開始」を押して記録してください</small>
+           </div>`}
+    `);
 
-      <!-- 手動追加 -->
-      <div class="text-center mt-3">
-        <a href="#/time/new" class="btn btn-farm-outline btn-sm">
-          <i class="bi bi-plus me-1"></i>手動で記録を追加
-        </a>
-      </div>`);
+    $('#exportMonth').onclick = () => exportHouseSessionsExcel(ym);
 
-    $('#exportMonth').onclick = () => exportRecordsExcel(ym);
-
-    if (!active) {
-      $('#btnStart').onclick = () => {
-        TIMESTORE.startWork();
-        flash('作業を開始しました');
-        VIEWS.timeList(ym);
-      };
-    } else if (active.state === 'working') {
-      // ライブタイマー
-      function updateTimer() {
-        const el = document.getElementById('liveTimer');
-        if (!el) return;
-        const now = new Date();
-        const [sh,sm] = active.startTime.split(':').map(Number);
-        const brk = TIMESTORE.calcBreakMin(active.breaks);
-        const elapsed = Math.max(0, (now.getHours()*60+now.getMinutes())-(sh*60+sm)-brk);
-        el.textContent = TIMESTORE.fmtMin(elapsed);
-      }
-      updateTimer();
-      const tid = setInterval(updateTimer, 30000);
+    // ライブタイマー（作業中の場合）
+    if (active) {
+      const tid = setInterval(() => {
+        const el = document.getElementById('topTimer');
+        if (!el) { clearInterval(tid); return; }
+        el.textContent = TIMESTORE.fmtMin(Math.max(0,Math.round((Date.now()-active.startTs)/60000)));
+      }, 30000);
       window._timerCleanup = () => clearInterval(tid);
-
-      // 種類・ハウス変更を即座に保存
-      document.getElementById('activeWorkType').addEventListener('change', e => {
-        TIMESTORE.updateActive({ workType: e.target.value });
-      });
-      document.querySelectorAll('.active-house').forEach(cb => {
-        cb.addEventListener('change', () => {
-          const ids = [...document.querySelectorAll('.active-house:checked')].map(x=>+x.value);
-          TIMESTORE.updateActive({ houseIds: ids });
-        });
-      });
-
-      $('#btnBreakStart').onclick = () => {
-        if (typeof window._timerCleanup === 'function') window._timerCleanup();
-        // 変更を保存してから休憩開始
-        const wt = document.getElementById('activeWorkType').value;
-        const ids = [...document.querySelectorAll('.active-house:checked')].map(x=>+x.value);
-        TIMESTORE.updateActive({ workType:wt, houseIds:ids });
-        TIMESTORE.startBreak();
-        flash('休憩を開始しました','warning');
-        VIEWS.timeList(ym);
-      };
-      $('#btnEnd').onclick = () => {
-        if (typeof window._timerCleanup === 'function') window._timerCleanup();
-        const wt = document.getElementById('activeWorkType').value;
-        const ids = [...document.querySelectorAll('.active-house:checked')].map(x=>+x.value);
-        TIMESTORE.updateActive({ workType:wt, houseIds:ids });
-        const rec = TIMESTORE.endWork();
-        flash('作業を終了しました。詳細を記入できます。');
-        location.hash = `#/time/${rec.id}/edit`;
-      };
-    } else {
-      $('#btnBreakEnd').onclick = () => {
-        TIMESTORE.endBreak();
-        flash('休憩を終了しました');
-        VIEWS.timeList(ym);
-      };
     }
   },
 
@@ -1695,16 +1665,32 @@ Object.assign(VIEWS, {
 
   /* ── 集計ページ（月別 + 種類別 + ハウス別） ── */
   timeMonthly() {
-    const totals  = TIMESTORE.getMonthlyTotals();
     const cur     = TIMESTORE.currentMonth();
-    const curSum  = TIMESTORE.getMonthSummary(cur);
-    const allMonths = [{ month:cur,...curSum }, ...totals.filter(t=>t.month!==cur)];
-    const seen    = new Set();
-    const months  = allMonths.filter(r=>{ if(seen.has(r.month)) return false; seen.add(r.month); return true; });
-
-    const byType  = TIMESTORE.getAllTimeByWorkType();
-    const byHouse = TIMESTORE.getAllTimeByHouse();
+    const allSess = TIMESTORE.getAllHouseSessions();
     const houses  = STORE.getHouses();
+
+    // 月別集計（houseSessions から）
+    const monthMap = {};
+    allSess.forEach(s=>{
+      const ym = s.date.slice(0,7);
+      if (!monthMap[ym]) monthMap[ym]={month:ym, totalMinutes:0, workDates:new Set()};
+      monthMap[ym].totalMinutes += s.minutes||0;
+      monthMap[ym].workDates.add(s.date);
+    });
+    const months = Object.values(monthMap)
+      .map(m=>({month:m.month, totalMinutes:m.totalMinutes, workDays:m.workDates.size}))
+      .sort((a,b)=>b.month.localeCompare(a.month));
+
+    // 作業種類別合計（全期間、houseSessions から）
+    const byType = {};
+    allSess.forEach(s=>{
+      const wt = s.workType||'（未設定）';
+      byType[wt] = (byType[wt]||0) + (s.minutes||0);
+    });
+
+    // ハウス別合計（全期間、houseSessions から）
+    const byHouse = {};
+    allSess.forEach(s=>{ byHouse[s.houseId]=(byHouse[s.houseId]||0)+(s.minutes||0); });
 
     const monthRows = months.map(t=>`
       <tr>
@@ -1731,10 +1717,7 @@ Object.assign(VIEWS, {
         <h2 class="fw-bold mb-0 ms-1"><i class="bi bi-bar-chart-fill me-2 text-success"></i>集計</h2>
         <div class="ms-auto d-flex gap-2 flex-wrap">
           <button class="btn btn-farm btn-sm" id="exportAll">
-            <i class="bi bi-file-earmark-excel-fill me-1"></i>月別エクセル
-          </button>
-          <button class="btn btn-farm btn-sm" id="exportByType">
-            <i class="bi bi-file-earmark-excel-fill me-1"></i>種類別エクセル
+            <i class="bi bi-file-earmark-excel-fill me-1"></i>今月エクセル
           </button>
         </div>
       </div>
@@ -1752,7 +1735,7 @@ Object.assign(VIEWS, {
 
       <!-- 作業種類別 -->
       <div class="card mb-4">
-        <div class="card-header py-2"><i class="bi bi-tag me-2"></i>作業の種類別 合計時間（直近2ヶ月）</div>
+        <div class="card-header py-2"><i class="bi bi-tag me-2"></i>作業の種類別 合計時間（全期間）</div>
         <div class="card-body p-0">
           <table class="table table-hover mb-0">
             <thead class="table-light"><tr><th>作業の種類</th><th class="text-end">合計時間</th></tr></thead>
@@ -1763,22 +1746,16 @@ Object.assign(VIEWS, {
 
       <!-- ハウス別 -->
       <div class="card mb-4">
-        <div class="card-header py-2"><i class="bi bi-tree me-2"></i>ハウス別 作業時間（直近2ヶ月）</div>
+        <div class="card-header py-2"><i class="bi bi-tree me-2"></i>ハウス別 作業時間（全期間）</div>
         <div class="card-body p-0">
           <table class="table table-hover mb-0">
             <thead class="table-light"><tr><th>ハウス</th><th class="text-end">合計時間</th></tr></thead>
             <tbody>${houseRows||'<tr><td colspan="2" class="text-center text-muted py-3">データなし</td></tr>'}</tbody>
           </table>
         </div>
-      </div>
+      </div>`);
 
-      <p class="text-muted small">
-        <i class="bi bi-info-circle me-1"></i>
-        種類別・ハウス別は直近2ヶ月の詳細データから集計。月別合計は全期間保持。
-      </p>`);
-
-    $('#exportAll').onclick    = () => exportMonthlyExcel();
-    $('#exportByType').onclick = () => exportWorkTypeExcel();
+    $('#exportAll').onclick = () => exportHouseSessionsExcel(cur);
   }
 });
 
